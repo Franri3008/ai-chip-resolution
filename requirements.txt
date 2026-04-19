@@ -1,0 +1,4 @@
+huggingface_hub>=0.27,<1.0
+openai>=1.0,<2.0
+requests>=2.31,<3.0
+tqdm>=4.66,<5.0

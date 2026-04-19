@@ -1,0 +1,21 @@
+.DS_Store
+.env
+.env.*
+.pytest_cache/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local agent notes
+CLAUDE.md
+
+# Secrets
+keys/*
+!keys/README.md
+
+# Generated pipeline artifacts
+database/*.json
+database/models.csv
+
+# Local test artifacts
+tests/__pycache__/

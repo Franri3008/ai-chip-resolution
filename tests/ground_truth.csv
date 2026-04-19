@@ -1,0 +1,63 @@
+who,id,position,method,provider,chip,source note
+Francisco,sentence-transformers/all-MiniLM-L6-v2,1,top,Google,TPU,
+Francisco,google-bert/bert-base-uncased,2,top,Google,TPU,
+Francisco,google/electra-base-discriminator,3,top,unknown,unknown,
+Francisco,Falconsai/nsfw_image_detection,4,top,unknown,unknown,"Fine-tuned from google/vit-base-patch16-224-in21k, which used TPU"
+Francisco,sentence-transformers/all-mpnet-base-v2,5,top,Google,TPU,
+Francisco,timm/mobilenetv3_small_100.lamb_in1k,6,top,Google,TPU,Disclosed in their paper
+Francisco,FacebookAI/roberta-large,7,top,Nvidia,V100,
+Francisco,sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2,8,top,unknown,unknown,"They mentioned V100 for inference testing, but don't disclose training"
+Francisco,Qwen/Qwen2.5-7B-Instruct,9,top,Nvidia,unknown,
+Francisco,laion/clap-htsat-fused,10,top,unknown,unknown,
+Francisco,FacebookAI/xlm-roberta-base,11,top,Nvidia,V100,paper
+Francisco,openai/clip-vit-base-patch32,12,top,unknown,unknown,
+Francisco,amazon/chronos-2,13,top,unknown,unknown,
+Francisco,Bingsu/adetailer,14,top,unknown,unknown,
+Francisco,BAAI/bge-m3,15,top,unknown,unknown,
+Francisco,Xenova/all-MiniLM-L6-v2,193,random,unknown,unknown,
+Francisco,Qwen/Qwen3-Reranker-0.6B,499,random,unknown,unknown,
+Francisco,parler-tts/parler-tts-mini-multilingual-v1.1,893,random,Nvidia,unknown,Very small mention in Github Readme
+Francisco,lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-MLX-8bit,770,random,unknown,unknown,
+Francisco,pyannote/voice-activity-detection,393,random,unknown,unknown,
+Robert,pyannote/wespeaker-voxceleb-resnet34-LM,16,top,Nvidia,"RTX 3090 for dev, T4 for productio",model.cuda() in train.py
+Robert,pyannote/segmentation-3.0,17,top,Nvidia,A100 / V100,mentions HPC access in paper: https://www.isca-archive.org/interspeech_2023/plaquet23_interspeech.pdf
+Robert,cross-encoder/ms-marco-MiniLM-L6-v2,18,top,unknown,unknown,Nvidia at inference of benchmarking
+Robert,pyannote/speaker-diarization-3.1,19,top,unknown,unknown,Self-hosted speed on a NVIDIA H100 80GB HBM3 per https://raw.githubusercontent.com/pyannote/pyannote-audio/main/README.md
+Robert,Qwen/Qwen3-VL-2B-Instruct,20,top,unknown,unknown,We train the Qwen3-VL series models on Alibaba Cloud’s PAI-Lingjun AI Computing Service per https://arxiv.org/pdf/2511.21631
+Robert,Xenova/paraphrase-multilingual-MiniLM-L12-v2,21,top,unknown,unknown,"BERTModel, not too relevant"
+Robert,Qwen/Qwen3-0.6B,22,top,unknown,unknown,"no mention: https://qwen.ai/blog?id=qwen3, https://arxiv.org/pdf/2505.09388"
+Robert,colbert-ir/colbertv2.0,23,top,unknown,unknown,"BERT type, unknown what trained on "
+Robert,omni-research/Tarsier2-Recap-7b,24,top,Nvidia,H100,using 128 H100 GPU per https://arxiv.org/pdf/2501.07888 (Tarsier 2)
+Robert,FacebookAI/roberta-base,25,top,Nvidia,V100,1024 GPU's per https://huggingface.co/FacebookAI/roberta-base/raw/main/README.md
+Robert,autogluon/chronos-bolt-small,26,top,Nvidia,unknown,"Training scripts: \""CUDA_VISIBLE_DEVICES=0\"" and \""torchrun --nproc-per-node=8\"" for 8-GPU distributed training; deployment example: ""source"": ""https://raw.githubusercontent.com/amazon-science/chronos-forecasting/main/scripts/README.md;\""instance_type=ml.c5.2xlarge\"" on Amazon SageMaker"","
+Robert,openai-community/gpt2,27,top,Google,TPU v3,The larger model was trained on 256 cloud TPU v3 cores per: https://huggingface.co/openai-community/gpt2/raw/main/README.md
+Robert,Comfy-Org/Wan_2.2_ComfyUI_Repackaged,28,top,unknown,unknown,"fork of wan2.2, either unknown"
+Robert,Kijai/WanVideo_comfy,29,top,unknown,unknown,"quantized versions of wan models, either unknown"
+Robert,alana89/TabSTAR,30,top,Nvidia,A40,train for less than 48 hours on a single NVIDIA A40 GPU (48GB memory) per https://arxiv.org/pdf/2505.18125
+Robert,openmmlab-community/mm_grounding_dino_large_all,911,random,Nvidia,unknown,Training Resources: 3090 GPUs per https://raw.githubusercontent.com/open-mmlab/mmdetection/main/configs/mm_grounding_dino/metafile.yml
+Robert,mistralai/Mistral-Small-24B-Instruct-2501,773,random,unknown,unknown,
+Robert,eddiegulay/wav2vec2-large-xlsr-mvc-swahili,389,random,unknown,unknown,
+Robert,answerdotai/JaColBERTv2.5,165,random,Nvidia,A100,per https://huggingface.co/papers/2407.20750
+Robert,Qwen/Qwen3-30B-A3B,268,random,unknown,unknown,Per Qwen3
+Emil,hexgrad/Kokoro-82M,31,top,Nvidia,A100,modelCard
+Emil,timm/convnextv2_nano.fcmae_ft_in22k_in1k,32,top,Google,TPU,"PROBABLE, this is in the paper: ""The experiments in the
+main paper are all conducted on TPU (v3-256) pods and
+we release a PyTorch reproduction"" but they also mention having used ""PyTorch V1.8.0,
+CUDA 11.1, CuDNN 8.2, and NVIDIA RTX A6000 GPU"" for some experiments"
+Emil,Qwen/Qwen3-VL-8B-Instruct,33,top,unknown,unknown,
+Emil,distilbert/distilbert-base-uncased,34,top,Nvidia,V100 ,modelCard
+Emil,Qwen/Qwen2.5-1.5B-Instruct,35,top,unknown,unknown,
+Emil,facebook/contriever,36,top,Nvidia,unknown,model.cuda() in train.py
+Emil,coqui/XTTS-v2,37,top,Nvidia,unknown,cuda imports in training.py
+Emil,openai/gpt-oss-20b,38,top,unknown,unknown,because open ai + web search
+Emil,meta-llama/Llama-3.1-8B-Instruct,39,top,Nvidia,H100,modelCard
+Emil,nomic-ai/nomic-embed-text-v1.5,40,top,Nvidia,unknown,gh + web search (for chip type)
+Emil,dima806/fairface_age_image_detection,41,top,unknown,unknown,linked (fine-tuning) kaggle notebook 
+Emil,Qwen/Qwen3-8B,43,top,unknown,unknown,
+Emil,BAAI/bge-small-en-v1.5,44,top,unknown,unknown,
+Emil,openai/clip-vit-large-patch14,45,top,Nvidia,V100 ,paper
+Emil,facebook/dinov2-base,306,random,Nvidia,A100,paper
+Emil,nyrahealth/CrisperWhisper,874,random,Nvidia,unknown,cuda in gh repo
+Emil,Qwen/Qwen3-TTS-12Hz-0.6B-Base,853,random,unknown,unknown,
+Emil,NeuML/pubmedbert-base-embeddings,703,random,unknown,unknown,
+Emil,OpenMed/OpenMed-NER-PharmaDetect-SuperClinical-434M,929,random,Nvidia,A100,paper
