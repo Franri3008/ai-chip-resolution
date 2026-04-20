@@ -82,8 +82,9 @@ def _check_local_reachable() -> None:
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
         raise LLMUnavailable(
             f"LOCAL provider: vLLM at {_local_base_url()} unreachable ({e}).\n"
-            f"Start vLLM first: vllm serve {_local_model()} --port 8000 "
-            f"--served-model-name gemma4-e2b"
+            f"Start vLLM first:\n"
+            f"  vllm serve {DEFAULT_LOCAL_MODEL} --port 8000 --served-model-name gemma4-e2b\n"
+            f"Then run with:  LLM_LOCAL_MODEL=gemma4-e2b python main.py --llm --provider LOCAL"
         )
 
 

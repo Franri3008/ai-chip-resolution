@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Setup script for ai-chip-resolution
-# Usage: bash setup.sh [--dev] [--vllm]
-#   --dev   also install dev/test dependencies
-#   --vllm  also install vLLM and download google/gemma-4-e2b-it
+# Usage: bash setup.sh [--dev] [--no-vllm]
+#   --dev      also install dev/test dependencies
+#   --no-vllm  skip vLLM installation (use if you only want cloud providers)
 
 set -euo pipefail
 
@@ -10,13 +10,13 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$REPO_DIR/.venv"
 PYTHON="${PYTHON:-python3}"
 INSTALL_DEV=false
-INSTALL_VLLM=false
+INSTALL_VLLM=true
 
 for arg in "$@"; do
     case $arg in
-        --dev)  INSTALL_DEV=true ;;
-        --vllm) INSTALL_VLLM=true ;;
-        *)      echo "Unknown flag: $arg"; exit 1 ;;
+        --dev)     INSTALL_DEV=true ;;
+        --no-vllm) INSTALL_VLLM=false ;;
+        *)         echo "Unknown flag: $arg"; exit 1 ;;
     esac
 done
 
@@ -73,10 +73,12 @@ if $INSTALL_VLLM; then
     echo
     echo "Installing vLLM..."
     pip install vllm
+    echo "  vLLM installed."
 
     echo
     echo "Downloading google/gemma-4-e2b-it from HuggingFace..."
-    echo "(Requires a valid HF token with access to gated Gemma 4 weights)"
+    echo "(Requires your HF token to have accepted Gemma 4 terms at"
+    echo " https://huggingface.co/google/gemma-4-e2b-it)"
 
     HF_TOKEN_FILE="$REPO_DIR/keys/.hf_token"
     if [ -f "$HF_TOKEN_FILE" ] && [ -s "$HF_TOKEN_FILE" ]; then
@@ -84,10 +86,11 @@ if $INSTALL_VLLM; then
         huggingface-cli download google/gemma-4-e2b-it \
             --token "$HF_TOKEN" \
             --local-dir-use-symlinks False
+        echo "  Model downloaded."
     else
-        echo "No HF token found at keys/.hf_token — skipping download."
-        echo "Set it up first, then run:"
-        echo "  huggingface-cli download google/gemma-4-e2b-it"
+        echo "  No HF token at keys/.hf_token yet — skipping model download."
+        echo "  After setting your token, run:"
+        echo "    huggingface-cli download google/gemma-4-e2b-it"
     fi
 fi
 
@@ -150,3 +153,13 @@ echo "  vllm serve google/gemma-4-e2b-it --port 8000 --served-model-name gemma4-
 echo "  LLM_LOCAL_MODEL=gemma4-e2b python main.py --top 50 --llm --provider LOCAL"
 echo
 echo "See README.md → VM Setup for a full cloud GPU walkthrough."
+echo
+if $INSTALL_VLLM; then
+    echo "Start vLLM (in a separate terminal or tmux pane):"
+    echo "  source .venv/bin/activate"
+    echo "  vllm serve google/gemma-4-e2b-it --port 8000 --served-model-name gemma4-e2b \\"
+    echo "       --gpu-memory-utilization 0.9 --max-num-seqs 16 --max-model-len 8192"
+    echo
+    echo "Then run the pipeline:"
+    echo "  LLM_LOCAL_MODEL=gemma4-e2b python main.py --top 50 --llm --provider LOCAL"
+fi
