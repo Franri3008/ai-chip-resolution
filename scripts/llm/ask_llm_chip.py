@@ -1,6 +1,4 @@
-import os
-
-from openai import OpenAI
+from llm_client import complete_async
 
 VALID_CHIPS = {
     "nvidia", "amd", "intel", "google_tpu", "apple", "aws", "qualcomm",
@@ -13,29 +11,9 @@ CONFIDENCE_MAP = {
 }
 
 
-def ask_llm_chip(
-    model_name,
-    yaml_library=None,
-    framework=None,
-    modelcard_excerpt="",
-    section_labeled_text="",
-    extra_context="",
-    llm_model="gpt-4o-mini",
-):
-    """Ask an LLM to determine the most likely training chip provider.
-
-    Called when heuristic chip confidence is below threshold or ambiguous.
-    Returns (chip_provider_str_or_None, confidence_float, cost_float).
-    """
-    token_path = os.path.join(os.path.dirname(__file__), "..", "..", "keys", ".openrouter_token")
-    api_key = open(token_path).read().strip()
-
-    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
-
-    # Use section-labeled text if available, otherwise fall back to raw excerpt
+def _build_prompt(model_name, yaml_library, framework, section_labeled_text, modelcard_excerpt, extra_context):
     card_text = section_labeled_text[:5000] if section_labeled_text else modelcard_excerpt[:3000]
-
-    prompt = (
+    return (
         f'Determine the hardware chip provider used to TRAIN the HuggingFace model "{model_name}".\n\n'
         f"Known facts:\n"
         f"- YAML library_name: {yaml_library or 'not specified'}\n"
@@ -57,17 +35,10 @@ def ask_llm_chip(
         f"confidence: <high, medium, or low>\n"
     )
 
-    response = client.chat.completions.create(
-        model=llm_model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-    )
-    answer = response.choices[0].message.content.strip()
-    cost = response.usage.model_dump().get("cost", 0.0)
 
-    # Parse structured response
+def _parse_answer(answer):
     conclusion = None
-    confidence = 0.6  # default
+    confidence = 0.6
 
     for line in answer.split("\n"):
         line_lower = line.strip().lower()
@@ -79,10 +50,30 @@ def ask_llm_chip(
             value = line_lower.split(":", 1)[1].strip()
             confidence = CONFIDENCE_MAP.get(value, 0.6)
 
-    # Fallback: try to parse single-word responses (backward compat)
     if conclusion is None:
         single = answer.strip().lower()
         if single in VALID_CHIPS:
             conclusion = single
 
+    return conclusion, confidence
+
+
+async def ask_llm_chip(
+    model_name,
+    yaml_library=None,
+    framework=None,
+    modelcard_excerpt="",
+    section_labeled_text="",
+    extra_context="",
+):
+    """Ask the configured LLM to determine the training chip provider.
+
+    Returns (chip_provider_str_or_None, confidence_float, cost_float).
+    """
+    prompt = _build_prompt(
+        model_name, yaml_library, framework,
+        section_labeled_text, modelcard_excerpt, extra_context,
+    )
+    answer, cost = await complete_async([{"role": "user", "content": prompt}])
+    conclusion, confidence = _parse_answer(answer)
     return conclusion, confidence, cost

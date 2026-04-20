@@ -10,6 +10,7 @@ from tqdm import tqdm
 from signals import (
     HARDWARE_SIGNALS, FRAMEWORK_SIGNALS, DEPENDENCY_SIGNALS,
     CHIP_PROVIDERS, FRAMEWORKS, MIN_SCORE_THRESHOLD, CONFIDENCE_DIVISOR,
+    apply_training_disclosure_cap,
 )
 
 # ── Paths ─────────────────────────────────────────────────────────────
@@ -222,7 +223,7 @@ def _check_context(content, match_start):
     if _EXPORT_RE.search(preceding):
         return 0.25
     if _TRAINING_RE.search(context):
-        return 2.0
+        return 1.5
     return 1.0
 
 
@@ -367,6 +368,9 @@ def analyze_repo(owner, repo):
     # LLM_CHIP_CONFIDENCE_THRESHOLD (0.5) ensures the LLM is consulted.
     if owner_repo.lower() in {k.lower() for k in REPO_PRIORS} and top_chip_name != "unknown":
         chip_conf = min(chip_conf, 0.45)
+
+    if top_chip_name != "unknown":
+        chip_conf = apply_training_disclosure_cap(chip_conf, chip_snippets)
 
     # Determine top framework
     sorted_fw = sorted(fw_scores.items(), key=lambda x: -x[1])

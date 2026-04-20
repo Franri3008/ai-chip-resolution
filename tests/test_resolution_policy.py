@@ -122,3 +122,117 @@ def test_explicit_modelcard_training_tpu_is_kept():
 
     assert resolved["chip_provider"] == "google_tpu"
     assert resolved["chip_provider_source"] == "modelcard"
+
+
+def test_thin_margin_does_not_flip_to_arxiv():
+    mc = {"main_github": None, "main_arxiv": "https://arxiv.org/abs/1234.5678", "main_arxiv_confidence": 0.8}
+    mca = {
+        "chip_provider": "google_tpu",
+        "chip_provider_confidence": 0.48,
+        "chip_snippets": [
+            {"snippet": "...we trained our model on a TPU v4-8 for 200k steps..."},
+        ],
+        "framework": "unknown",
+        "framework_confidence": 0.0,
+        "matched_sections": ["training"],
+    }
+    gha = _unknown_analysis()
+    axa = {
+        "chip_provider": "nvidia",
+        "chip_provider_confidence": 0.52,
+        "chip_snippets": [
+            {"snippet": "...we trained on 8 A100 GPUs for 100 hours..."},
+        ],
+        "framework": "unknown",
+        "framework_confidence": 0.0,
+    }
+
+    resolved = resolve_initial_conclusion(mc, mca, gha, axa)
+
+    # ax margin over mc is 0.04 < 0.15 → arxiv does not win primary
+    # Falls through to modelcard default
+    assert resolved["chip_provider"] == "google_tpu"
+    assert resolved["chip_provider_source"] == "modelcard"
+    # Disagreeing arxiv signal (>= 0.3) triggers conflict penalty
+    assert resolved["source_conflict"] is True
+    assert resolved["chip_provider_confidence"] <= 0.55
+
+
+def test_source_conflict_lowers_confidence():
+    mc = {"main_github": "https://github.com/example/repo", "main_arxiv": None, "main_arxiv_confidence": 0.0}
+    mca = {
+        "chip_provider": "google_tpu",
+        "chip_provider_confidence": 0.9,
+        "chip_snippets": [
+            {"snippet": "...we trained on TPU v4 pods for 300k steps..."},
+        ],
+        "framework": "unknown",
+        "framework_confidence": 0.0,
+        "matched_sections": ["training"],
+    }
+    gha = {
+        "chip_provider": "nvidia",
+        "chip_provider_confidence": 0.6,
+        "chip_snippets": [
+            {"snippet": "...we trained on 8 A100 GPUs for 100 hours..."},
+        ],
+        "framework": "unknown",
+        "framework_confidence": 0.0,
+        "detection_files": ["scripts/train.py"],
+    }
+    axa = _unknown_analysis()
+
+    resolved = resolve_initial_conclusion(mc, mca, gha, axa)
+
+    # gh=0.6 vs mc=0.9: gh primary requires gh_conf - mc_conf >= 0.15, fails.
+    # mc wins as default. Conflict (gh=nvidia 0.6) caps confidence at 0.55.
+    assert resolved["chip_provider"] == "google_tpu"
+    assert resolved["source_conflict"] is True
+    assert resolved["chip_provider_confidence"] <= 0.55
+
+
+def test_low_floor_arxiv_still_returned_via_fallback():
+    mc = {"main_github": None, "main_arxiv": "https://arxiv.org/abs/1234.5678", "main_arxiv_confidence": 0.8}
+    mca = _unknown_analysis()
+    gha = _unknown_analysis()
+    axa = {
+        "chip_provider": "nvidia",
+        "chip_provider_confidence": 0.35,
+        "chip_snippets": [
+            {"snippet": "...we trained on 4 V100 GPUs for approximately 20 hours..."},
+        ],
+        "framework": "unknown",
+        "framework_confidence": 0.0,
+    }
+
+    resolved = resolve_initial_conclusion(mc, mca, gha, axa)
+
+    # ax < MIN_PREFER_ARXIV (0.5) → skips primary branch
+    # Falls through: mc unknown, gh unknown, ax != unknown → ax wins at raw 0.35
+    assert resolved["chip_provider"] == "nvidia"
+    assert resolved["chip_provider_source"] == "arxiv_paper"
+    assert resolved["chip_provider_confidence"] == 0.35
+    assert resolved["source_conflict"] is False
+
+
+def test_training_disclosure_cap_limits_heuristic_confidence():
+    mc = {"main_github": None, "main_arxiv": None, "main_arxiv_confidence": 0.0}
+    mca = {
+        "chip_provider": "nvidia",
+        "chip_provider_confidence": 0.8,
+        "chip_snippets": [
+            {"snippet": "...model supports CUDA acceleration via TensorRT backend..."},
+        ],
+        "framework": "pytorch",
+        "framework_confidence": 0.9,
+        "matched_sections": ["body"],
+    }
+    gha = _unknown_analysis()
+    axa = _unknown_analysis()
+
+    resolved = resolve_initial_conclusion(mc, mca, gha, axa)
+
+    # No snippet contains explicit training-disclosure language
+    # → confidence capped at 0.6 before aggregation
+    assert resolved["chip_provider"] == "nvidia"
+    assert resolved["chip_provider_confidence"] <= 0.6

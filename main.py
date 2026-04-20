@@ -1,7 +1,7 @@
 import argparse
-import concurrent.futures
 import csv
 import json
+import os
 import re
 import subprocess
 import sys
@@ -14,6 +14,17 @@ SCRIPTS = Path(__file__).parent / "scripts"
 INGEST = SCRIPTS / "ingest"
 LLM = SCRIPTS / "llm"
 CLASSIFIERS = SCRIPTS / "classifiers"
+
+sys.path.insert(0, str(CLASSIFIERS))
+sys.path.insert(0, str(LLM))
+from signals import apply_training_disclosure_cap  # noqa: E402
+from llm_client import (  # noqa: E402
+    llm_enabled,
+    validate_provider,
+    LLMDisabled,
+    LLMUnavailable,
+    VALID_PROVIDERS,
+)
 
 LLM_CHIP_CONFIDENCE_THRESHOLD = 0.5
 LLM_CHIP_CONFLICT_THRESHOLD = 0.7  # Skip conflict-check LLM when chip confidence is already high
@@ -84,14 +95,16 @@ _GT_PROVIDER_MAP = {
 
 
 def check_tokens():
-    """Verify all required API tokens exist and are valid. Exits on failure."""
+    """Verify required API tokens. HF and GH always required; LLM creds only when --llm.
+
+    Exits on failure.
+    """
     keys = Path(__file__).parent / "keys"
     errors = []
 
     checks = [
-        (".hf_token",        "https://huggingface.co/api/whoami-v2",  {"Authorization": "Bearer {tok}"},                          "HuggingFace"),
-        (".gh_token",        "https://api.github.com/rate_limit",     {"Authorization": "Bearer {tok}", "User-Agent": "model-classifier"}, "GitHub"),
-        (".openrouter_token","https://openrouter.ai/api/v1/models",   {"Authorization": "Bearer {tok}"},                          "OpenRouter"),
+        (".hf_token", "https://huggingface.co/api/whoami-v2", {"Authorization": "Bearer {tok}"}, "HuggingFace"),
+        (".gh_token", "https://api.github.com/rate_limit", {"Authorization": "Bearer {tok}", "User-Agent": "model-classifier"}, "GitHub"),
     ]
 
     for filename, url, headers_tmpl, name in checks:
@@ -111,6 +124,12 @@ def check_tokens():
             errors.append(f"{name} token invalid (HTTP {e.code}): keys/{filename}")
         except Exception as e:
             errors.append(f"{name} token check failed ({e}): keys/{filename}")
+
+    if llm_enabled():
+        try:
+            validate_provider()
+        except LLMUnavailable as e:
+            errors.append(str(e))
 
     if errors:
         print("\nToken validation failed:")
@@ -316,14 +335,36 @@ def resolve_initial_conclusion(mc, mca, gha, axa):
         ax_chip_conf = 0.0
         quality_blocked_chip = True
 
+    # Training-disclosure cap (safety net): if the scored snippets show no
+    # explicit training-disclosure phrasing, cap at 0.6 so LLM fallback runs.
+    # Classifiers also apply this, but re-applying here protects the aggregator
+    # from any classifier that forgets.
+    if mc_chip != "unknown" and mc_chip_conf > 0:
+        mc_chip_conf = round(apply_training_disclosure_cap(mc_chip_conf, mca.get("chip_snippets")), 2)
+    if gh_chip != "unknown" and gh_chip_conf > 0:
+        gh_chip_conf = round(apply_training_disclosure_cap(gh_chip_conf, gha.get("chip_snippets")), 2)
+    if ax_chip != "unknown" and ax_chip_conf > 0:
+        ax_chip_conf = round(apply_training_disclosure_cap(ax_chip_conf, axa.get("chip_snippets")), 2)
+
     ax_chip_source = "arxiv_paper"
 
-    MIN_PREFER_GITHUB = 0.3
-    MIN_PREFER_ARXIV = 0.3
+    MIN_PREFER_GITHUB = 0.5
+    MIN_PREFER_ARXIV = 0.5
+    MIN_MARGIN = 0.15
+    CONFLICT_CONF_CAP = 0.55
+    CONFLICT_DISAGREE_MIN = 0.3
 
-    if ax_chip_conf > max(gh_chip_conf, mc_chip_conf) and ax_chip_conf >= MIN_PREFER_ARXIV and ax_chip != "unknown":
+    if (
+        ax_chip != "unknown"
+        and ax_chip_conf >= MIN_PREFER_ARXIV
+        and ax_chip_conf - max(gh_chip_conf, mc_chip_conf) >= MIN_MARGIN
+    ):
         chip, chip_conf, chip_src = ax_chip, ax_chip_conf, ax_chip_source
-    elif gh_chip_conf > mc_chip_conf and gh_chip_conf >= MIN_PREFER_GITHUB and gh_chip != "unknown":
+    elif (
+        gh_chip != "unknown"
+        and gh_chip_conf >= MIN_PREFER_GITHUB
+        and gh_chip_conf - mc_chip_conf >= MIN_MARGIN
+    ):
         chip, chip_conf, chip_src = gh_chip, gh_chip_conf, "github_code"
     elif mc_chip != "unknown" and mc_chip_conf > 0:
         chip, chip_conf, chip_src = mc_chip, mc_chip_conf, "modelcard"
@@ -334,18 +375,64 @@ def resolve_initial_conclusion(mc, mca, gha, axa):
     else:
         chip, chip_conf, chip_src = "unknown", 0.0, None
 
-    if ax_fw_conf > max(gh_fw_conf, mc_fw_conf) and ax_fw_conf >= MIN_PREFER_ARXIV and axa.get("framework", "unknown") != "unknown":
-        fw, fw_conf, fw_src = axa["framework"], ax_fw_conf, "arxiv_paper"
-    elif gh_fw_conf > mc_fw_conf and gh_fw_conf >= MIN_PREFER_GITHUB and gha.get("framework", "unknown") != "unknown":
-        fw, fw_conf, fw_src = gha["framework"], gh_fw_conf, "github_code"
-    elif mca.get("framework", "unknown") != "unknown":
-        fw, fw_conf, fw_src = mca["framework"], mc_fw_conf, "modelcard"
-    elif gha.get("framework", "unknown") != "unknown":
-        fw, fw_conf, fw_src = gha["framework"], gh_fw_conf, "github_code"
-    elif axa.get("framework", "unknown") != "unknown":
-        fw, fw_conf, fw_src = axa["framework"], ax_fw_conf, "arxiv_paper"
+    chip_conflict = False
+    if chip != "unknown":
+        for other_chip, other_conf in (
+            (mc_chip, mc_chip_conf),
+            (gh_chip, gh_chip_conf),
+            (ax_chip, ax_chip_conf),
+        ):
+            if (
+                other_chip != "unknown"
+                and other_chip != chip
+                and other_conf >= CONFLICT_DISAGREE_MIN
+            ):
+                chip_conflict = True
+                break
+        if chip_conflict:
+            chip_conf = min(chip_conf, CONFLICT_CONF_CAP)
+
+    mc_fw = mca.get("framework", "unknown")
+    gh_fw = gha.get("framework", "unknown")
+    ax_fw = axa.get("framework", "unknown")
+
+    if (
+        ax_fw != "unknown"
+        and ax_fw_conf >= MIN_PREFER_ARXIV
+        and ax_fw_conf - max(gh_fw_conf, mc_fw_conf) >= MIN_MARGIN
+    ):
+        fw, fw_conf, fw_src = ax_fw, ax_fw_conf, "arxiv_paper"
+    elif (
+        gh_fw != "unknown"
+        and gh_fw_conf >= MIN_PREFER_GITHUB
+        and gh_fw_conf - mc_fw_conf >= MIN_MARGIN
+    ):
+        fw, fw_conf, fw_src = gh_fw, gh_fw_conf, "github_code"
+    elif mc_fw != "unknown":
+        fw, fw_conf, fw_src = mc_fw, mc_fw_conf, "modelcard"
+    elif gh_fw != "unknown":
+        fw, fw_conf, fw_src = gh_fw, gh_fw_conf, "github_code"
+    elif ax_fw != "unknown":
+        fw, fw_conf, fw_src = ax_fw, ax_fw_conf, "arxiv_paper"
     else:
         fw, fw_conf, fw_src = "unknown", 0.0, None
+
+    fw_conflict = False
+    if fw != "unknown":
+        for other_fw, other_conf in (
+            (mc_fw, mc_fw_conf),
+            (gh_fw, gh_fw_conf),
+            (ax_fw, ax_fw_conf),
+        ):
+            if (
+                other_fw != "unknown"
+                and other_fw != fw
+                and other_conf >= CONFLICT_DISAGREE_MIN
+            ):
+                fw_conflict = True
+                break
+        if fw_conflict:
+            fw_conf = min(fw_conf, CONFLICT_CONF_CAP)
 
     return {
         "chip_provider": chip,
@@ -355,6 +442,7 @@ def resolve_initial_conclusion(mc, mca, gha, axa):
         "framework_confidence": fw_conf,
         "framework_source": fw_src,
         "quality_blocked_chip": quality_blocked_chip,
+        "source_conflict": chip_conflict or fw_conflict,
     }
 
 
@@ -363,7 +451,16 @@ def main():
     parser.add_argument("--top", type=int, default=None, help="Number of top models to analyze (default: all)")
     parser.add_argument("--update-models", action="store_true", default=False, help="Re-fetch models.csv from HuggingFace (default: use existing)")
     parser.add_argument("--workers", type=int, default=4, help="Parallel workers per classifier script, and classifiers run in parallel (default: 4)")
+    parser.add_argument("--llm", action="store_true", default=False,
+                        help="Enable LLM fallback for chip classification and candidate selection (default: disabled)")
+    parser.add_argument("--provider", choices=list(VALID_PROVIDERS), default="OPENAI",
+                        help="LLM provider when --llm is set: OPENAI (gpt-4o-mini, default), "
+                             "LOCAL (vLLM at localhost:8000 serving gemma-3n-e2b-it), or OPENROUTER")
     args = parser.parse_args()
+
+    if args.llm:
+        os.environ["LLM_ENABLED"] = "1"
+        os.environ["LLM_PROVIDER"] = args.provider
 
     check_tokens()
 
@@ -390,10 +487,17 @@ def main():
 
 
 def build_results(workers=4):
+    import asyncio
+
     db = Path(__file__).parent / "database"
 
     sys.path.insert(0, str(LLM))
-    from ask_llm_chip import ask_llm_chip
+    if llm_enabled():
+        import llm_client as _llm_client
+        _llm_client.set_concurrency(workers)
+        from ask_llm_chip import ask_llm_chip
+    else:
+        ask_llm_chip = None
 
     with open(db / "modelcards.json", encoding="utf-8") as f:
         modelcards = {m["id"]: m for m in json.load(f)}
@@ -537,19 +641,26 @@ def build_results(workers=4):
             },
         })
 
-    # ── LLM chip fallback (parallelized) ──────────────────────────────
-    def _call_llm_chip(item):
-        idx, model_id, kwargs = item
-        try:
-            llm_chip, llm_conf, cost = ask_llm_chip(**kwargs)
-            return idx, model_id, llm_chip, llm_conf, cost, None
-        except Exception as e:
-            return idx, model_id, None, 0.0, 0.0, str(e)
-
+    # ── LLM chip fallback (async parallelized) ────────────────────────
     llm_chip_calls = 0
     total_llm_chip_cost = 0.0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        for idx, model_id, llm_chip, llm_conf, cost, err in executor.map(_call_llm_chip, llm_queue):
+
+    if not llm_enabled():
+        if llm_queue:
+            print(f"  LLM disabled (--llm not set). Skipping {len(llm_queue)} chip fallback call(s).")
+    else:
+        async def _run_chip_llm_queue():
+            async def _call_one(item):
+                idx, model_id, kwargs = item
+                try:
+                    llm_chip, llm_conf, cost = await ask_llm_chip(**kwargs)
+                    return idx, model_id, llm_chip, llm_conf, cost, None
+                except Exception as e:
+                    return idx, model_id, None, 0.0, 0.0, str(e)
+
+            return await asyncio.gather(*[_call_one(item) for item in llm_queue])
+
+        for idx, model_id, llm_chip, llm_conf, cost, err in asyncio.run(_run_chip_llm_queue()):
             total_llm_chip_cost += cost
             if err:
                 print(f"  LLM chip failed for {model_id}: {err}")

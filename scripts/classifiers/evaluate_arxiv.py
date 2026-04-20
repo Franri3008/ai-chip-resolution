@@ -5,7 +5,7 @@ Writes main_arxiv, main_arxiv_confidence, main_arxiv_source to modelcards.json.
 """
 
 import argparse
-import concurrent.futures
+import asyncio
 import json
 import os
 import re
@@ -13,6 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "llm"))
 from ask_llm_arxiv import ask_llm_arxiv
+from llm_client import llm_enabled, set_concurrency
 
 data_path = os.path.join(os.path.dirname(__file__), "..", "..", "database", "modelcards.json")
 
@@ -142,16 +143,6 @@ def compute_confidence(best_score, second_score, num_links):
     return round(min(1.0, max(0.1, base)), 2)
 
 
-def _run_llm_for_model(item):
-    """Call ask_llm_arxiv for one model. Returns (model_id, llm_result, cost, err)."""
-    model_id, card, links = item
-    try:
-        llm_result, cost = ask_llm_arxiv(card, model_id, links)
-        return model_id, llm_result, cost, None
-    except Exception as e:
-        return model_id, None, 0.0, str(e)
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--workers", type=int, default=4,
@@ -205,8 +196,23 @@ def main():
     ]
 
     total_llm_cost = 0.0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
-        for model_id, llm_result, cost, err in executor.map(_run_llm_for_model, llm_queue):
+    if not llm_enabled():
+        if llm_queue:
+            print(f"  LLM disabled (--llm not set). Skipping {len(llm_queue)} arXiv candidate-selection call(s).")
+    else:
+        set_concurrency(args.workers)
+
+        async def _run_all_llm():
+            async def _one(item):
+                model_id, card, links = item
+                try:
+                    llm_result, cost = await ask_llm_arxiv(card, model_id, links)
+                    return model_id, llm_result, cost, None
+                except Exception as e:
+                    return model_id, None, 0.0, str(e)
+            return await asyncio.gather(*[_one(item) for item in llm_queue])
+
+        for model_id, llm_result, cost, err in asyncio.run(_run_all_llm()):
             total_llm_cost += cost
             if err:
                 print(f"  LLM failed for {model_id}: {err}")

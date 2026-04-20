@@ -1,3 +1,5 @@
+import re
+
 HARDWARE_SIGNALS = {
     "nvidia": {
         "strong": [
@@ -28,10 +30,7 @@ HARDWARE_SIGNALS = {
             r'\bdeepspeed\b',
             r'torch\+cu\d+',
         ],
-        "weak": [
-            r'\bgpu\b',
-            r'--fp16\b',
-        ],
+        "weak": [],
         "file_presence": [
             r'\.cu$',
             r'\.cuh$',
@@ -55,9 +54,7 @@ HARDWARE_SIGNALS = {
             r'\binstinct\b',
             r'amd[-_]?gpu',
         ],
-        "weak": [
-            r'\bamd\b',
-        ],
+        "weak": [],
         "file_presence": [
             r'\.hip$',
         ],
@@ -78,9 +75,7 @@ HARDWARE_SIGNALS = {
             r'\bmkl\b',
             r'\bonednn\b|one[-_]?dnn',
         ],
-        "weak": [
-            r'\bintel\b',
-        ],
+        "weak": [],
         "file_presence": [],
     },
     "google_tpu": {
@@ -116,9 +111,7 @@ HARDWARE_SIGNALS = {
         "medium": [
             r'\bm[1-4][-_ ](?:pro|max|ultra)\b',
         ],
-        "weak": [
-            r'\bapple\b',
-        ],
+        "weak": [],
         "file_presence": [],
     },
     "aws": {
@@ -215,7 +208,7 @@ FRAMEWORK_SIGNALS = {
             r'\bfrom mxnet\b',
         ],
         "medium": [
-            r'\bgluon(?!ts)\b(?!.*pytorch)', 
+            r'\bgluon(?!ts)\b(?!.*pytorch)',
         ],
         "weak": [],
     },
@@ -260,5 +253,34 @@ DEPENDENCY_SIGNALS = {
 CHIP_PROVIDERS = set(HARDWARE_SIGNALS.keys())
 FRAMEWORKS = set(FRAMEWORK_SIGNALS.keys())
 
-MIN_SCORE_THRESHOLD = 5
-CONFIDENCE_DIVISOR = 20
+MIN_SCORE_THRESHOLD = 8
+CONFIDENCE_DIVISOR = 30
+
+TRAINING_DISCLOSURE_CAP = 0.6
+
+EXPLICIT_TRAINING_DISCLOSURE_RE = re.compile(
+    r'(?:trained?\s+on|training\s+(?:was\s+)?(?:done|performed|conducted|run)\s+on|'
+    r'training\s+hardware|training\s+infrastructure|'
+    r'fine[- ]?tun(?:ed|ing)\s+on|pre[- ]?train(?:ed|ing)\s+on|'
+    r'we\s+train(?:ed)?\b|experiments?\b.{0,60}?\bconducted\s+on|'
+    r'required\b.{0,60}?\b(?:gpu|gpus|tpu|tpus|h100|v100|a100|h200|p100|t4))',
+    re.IGNORECASE,
+)
+
+
+def has_training_disclosure_language(snippets):
+    """Return True if any snippet contains explicit training-disclosure phrasing."""
+    for snippet in snippets or []:
+        text = snippet.get("snippet", "") if isinstance(snippet, dict) else str(snippet)
+        if text and EXPLICIT_TRAINING_DISCLOSURE_RE.search(text):
+            return True
+    return False
+
+
+def apply_training_disclosure_cap(confidence, snippets, cap=TRAINING_DISCLOSURE_CAP):
+    """Cap confidence when no snippet shows explicit training-disclosure language."""
+    if confidence <= cap:
+        return confidence
+    if has_training_disclosure_language(snippets):
+        return confidence
+    return cap

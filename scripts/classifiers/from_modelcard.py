@@ -9,6 +9,7 @@ from tqdm import tqdm
 from signals import (
     HARDWARE_SIGNALS, FRAMEWORK_SIGNALS,
     CHIP_PROVIDERS, FRAMEWORKS, MIN_SCORE_THRESHOLD, CONFIDENCE_DIVISOR,
+    apply_training_disclosure_cap,
 )
 
 # ── Paths ─────────────────────────────────────────────────────────────
@@ -277,7 +278,7 @@ def check_context(text, match_start):
     if _EXPORT_RE.search(preceding):
         return 0.25
     if _TRAINING_RE.search(context):
-        return 2.0
+        return 1.5
     return 1.0
 
 
@@ -414,6 +415,7 @@ def analyze_modelcard(modelcard_text, model_id=""):
     if sorted_chips and sorted_chips[0][1] >= MIN_SCORE_THRESHOLD:
         top_chip_name, top_chip_sc = sorted_chips[0]
         chip_conf = min(1.0, round(top_chip_sc / CONFIDENCE_DIVISOR, 2))
+        chip_conf = apply_training_disclosure_cap(chip_conf, chip_snippets)
     else:
         top_chip_name, top_chip_sc, chip_conf = "unknown", 0, 0.0
 
