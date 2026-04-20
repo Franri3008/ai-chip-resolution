@@ -26,7 +26,7 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
-DEFAULT_LOCAL_MODEL = "google/gemma-4-e2b-it"
+DEFAULT_LOCAL_MODEL = "google/gemma-4-E2B-it"
 DEFAULT_LOCAL_BASE_URL = "http://localhost:8000/v1"
 DEFAULT_OPENROUTER_MODEL = "gpt-4o-mini"
 
@@ -82,9 +82,13 @@ def _check_local_reachable() -> None:
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
         raise LLMUnavailable(
             f"LOCAL provider: vLLM at {_local_base_url()} unreachable ({e}).\n"
-            f"Start vLLM first:\n"
-            f"  vllm serve {DEFAULT_LOCAL_MODEL} --port 8000 --served-model-name gemma4-e2b\n"
-            f"Then run with:  LLM_LOCAL_MODEL=gemma4-e2b python main.py --llm --provider LOCAL"
+            f"Start vLLM first (requires vllm nightly + transformers v5 — run setup.sh):\n"
+            f"  VLLM_USE_DEEP_GEMM=0 vllm serve {DEFAULT_LOCAL_MODEL} \\\n"
+            f"      --port 8000 --served-model-name gemma4 \\\n"
+            f"      --gpu-memory-utilization 0.55 --max-num-seqs 32 --max-model-len 4096 \\\n"
+            f"      --limit-mm-per-prompt '{{\"image\": 0, \"audio\": 0}}' \\\n"
+            f"      --enable-prefix-caching --quantization fp8\n"
+            f"Then run with:  LLM_LOCAL_MODEL=gemma4 python main.py --llm --provider LOCAL"
         )
 
 

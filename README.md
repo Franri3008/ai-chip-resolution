@@ -74,21 +74,23 @@ python main.py --llm --provider OPENROUTER # OpenRouter, gpt-4o-mini
 python main.py --llm --provider LOCAL      # vLLM at localhost:8000 (Gemma 4 E2B)
 ```
 
-For `--provider LOCAL`, start a vLLM server before running:
+For `--provider LOCAL`, start a vLLM server before running. **Gemma 4 requires
+vllm nightly + transformers v5** (stable `pip install vllm` pins transformers<5
+and will fail on `model_type: "gemma4"` weights). `setup.sh` installs the right
+combo automatically — see [VM Setup](#vm-setup-gpu-cloud).
 
 ```bash
-vllm serve google/gemma-4-e2b-it \
-    --port 8000 \
-    --served-model-name gemma4-e2b \
-    --gpu-memory-utilization 0.9 \
-    --max-num-seqs 16 \
-    --max-model-len 8192
+VLLM_USE_DEEP_GEMM=0 vllm serve google/gemma-4-E2B-it \
+    --port 8000 --served-model-name gemma4 \
+    --gpu-memory-utilization 0.55 --max-num-seqs 32 --max-model-len 4096 \
+    --limit-mm-per-prompt '{"image": 0, "audio": 0}' \
+    --enable-prefix-caching --quantization fp8
 ```
 
-Then tell the pipeline which model name vLLM is serving:
+Then tell the pipeline which served model name to use:
 
 ```bash
-LLM_LOCAL_MODEL=gemma4-e2b python main.py --llm --provider LOCAL
+LLM_LOCAL_MODEL=gemma4 python main.py --llm --provider LOCAL
 ```
 
 Override the endpoint with `LLM_LOCAL_BASE_URL` (default `http://localhost:8000/v1`).
@@ -121,14 +123,19 @@ include them; verify with `nvidia-smi`).
 git clone https://github.com/<your-org>/ai-chip-resolution.git
 cd ai-chip-resolution
 
-# Install Python deps + vLLM + download Gemma 4 E2B in one step:
-bash setup.sh --vllm
+# Install Python deps + vLLM nightly + transformers v5 + Gemma 4 E2B weights:
+bash setup.sh
 ```
 
-`setup.sh --vllm` will prompt for your HF and API tokens, install vLLM via
-pip, and download `google/gemma-4-e2b-it` using `huggingface-cli`. The model
-download requires that your HuggingFace account has accepted the Gemma 4 terms
-at <https://huggingface.co/google/gemma-4-e2b-it>.
+`setup.sh` prompts for your HF and API tokens, then installs **vLLM nightly**
+and **transformers v5 from source** (stable `pip install vllm` cannot serve
+Gemma 4 — its pin on `transformers<5` rejects `model_type: "gemma4"` weights).
+It then downloads `google/gemma-4-E2B-it` via `huggingface-cli`.
+
+Gemma 4 is a gated repo. Your HuggingFace account must have accepted the
+license at <https://huggingface.co/google/gemma-4-E2B-it> before setup.sh can
+download the weights. Pass `--no-vllm` to setup.sh if you only need cloud
+providers (OPENAI / OPENROUTER).
 
 ### 3 — Start the vLLM server
 
@@ -137,14 +144,19 @@ Run this in a **separate terminal** (or tmux/screen pane):
 ```bash
 source .venv/bin/activate
 
-vllm serve google/gemma-4-e2b-it \
-    --port 8000 \
-    --served-model-name gemma4-e2b \
-    --gpu-memory-utilization 0.9 \
-    --max-num-seqs 16 \
-    --max-model-len 8192 \
-    --dtype auto
+VLLM_USE_DEEP_GEMM=0 vllm serve google/gemma-4-E2B-it \
+    --port 8000 --served-model-name gemma4 \
+    --gpu-memory-utilization 0.55 --max-num-seqs 32 --max-model-len 4096 \
+    --limit-mm-per-prompt '{"image": 0, "audio": 0}' \
+    --enable-prefix-caching --quantization fp8
 ```
+
+Notes:
+- `VLLM_USE_DEEP_GEMM=0` avoids a DeepGEMM FP8-warmup crash when the
+  `deep_gemm` kernels aren't installed.
+- `--limit-mm-per-prompt '{"image": 0, "audio": 0}'` disables Gemma 4's
+  multimodal inputs (we only need text for classification).
+- `--quantization fp8` roughly halves VRAM footprint.
 
 Wait until you see `Application startup complete` before running the pipeline.
 
@@ -157,7 +169,7 @@ source .venv/bin/activate
 python main.py --top 100
 
 # Full run with Gemma 4 E2B as LLM fallback:
-LLM_LOCAL_MODEL=gemma4-e2b \
+LLM_LOCAL_MODEL=gemma4 \
   python main.py --top 100 --llm --provider LOCAL --workers 8
 ```
 
@@ -177,7 +189,8 @@ python -m http.server 8080 &   # serve current dir
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_LOCAL_BASE_URL` | `http://localhost:8000/v1` | vLLM endpoint |
-| `LLM_LOCAL_MODEL` | `google/gemma-4-e2b-it` | model name sent to vLLM |
+| `LLM_LOCAL_MODEL` | `google/gemma-4-E2B-it` | model name sent to vLLM (set to the `--served-model-name` alias, e.g. `gemma4`) |
+| `VLLM_USE_DEEP_GEMM` | `0` | keep at 0 unless deep_gemm kernels are installed |
 | `OPENAI_API_KEY` | — | alternative to `keys/.openai_token` |
 
 ## Pipeline

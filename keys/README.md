@@ -12,7 +12,7 @@ Required only when running with `--llm`, depending on `--provider`:
 - `.openai_token`: OpenAI API key (for `--provider OPENAI`, the default)
 - `.openrouter_token`: OpenRouter API key (for `--provider OPENROUTER`)
 - (none) `--provider LOCAL` reaches a vLLM server at `http://localhost:8000/v1`
-  serving `google/gemma-4-e2b-it` by default.
+  serving `google/gemma-4-E2B-it` by default.
   Override: `LLM_LOCAL_BASE_URL`, `LLM_LOCAL_MODEL` env vars.
 
 Example:

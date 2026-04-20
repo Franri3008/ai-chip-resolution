@@ -71,26 +71,34 @@ fi
 
 if $INSTALL_VLLM; then
     echo
-    echo "Installing vLLM..."
-    pip install vllm
-    echo "  vLLM installed."
+    echo "Installing vLLM nightly + transformers v5 for Gemma 4..."
+    # The stable pip wheel for vllm pins transformers<5, but Gemma 4 weights
+    # declare model_type: "gemma4", which is only handled in transformers v5+.
+    # We install from nightly/source and deliberately ignore pip's version-pin
+    # warnings (the pins are stale; runtime imports resolve correctly).
+    pip install -U vllm --pre --extra-index-url https://wheels.vllm.ai/nightly
+    pip install --upgrade --force-reinstall --no-deps \
+        git+https://github.com/huggingface/transformers.git
+    pip install --upgrade 'huggingface_hub>=1.0'
+    pip install --no-deps 'compressed-tensors==0.14.0.1'
+    echo "  vllm nightly + transformers v5 installed (pip pin warnings are expected)"
 
     echo
-    echo "Downloading google/gemma-4-e2b-it from HuggingFace..."
-    echo "(Requires your HF token to have accepted Gemma 4 terms at"
-    echo " https://huggingface.co/google/gemma-4-e2b-it)"
+    echo "Downloading google/gemma-4-E2B-it from HuggingFace..."
+    echo "(Gated repo — your HF account must have accepted the Gemma license at"
+    echo " https://huggingface.co/google/gemma-4-E2B-it)"
 
     HF_TOKEN_FILE="$REPO_DIR/keys/.hf_token"
     if [ -f "$HF_TOKEN_FILE" ] && [ -s "$HF_TOKEN_FILE" ]; then
         HF_TOKEN=$(cat "$HF_TOKEN_FILE")
-        huggingface-cli download google/gemma-4-e2b-it \
+        huggingface-cli download google/gemma-4-E2B-it \
             --token "$HF_TOKEN" \
             --local-dir-use-symlinks False
         echo "  Model downloaded."
     else
         echo "  No HF token at keys/.hf_token yet — skipping model download."
         echo "  After setting your token, run:"
-        echo "    huggingface-cli download google/gemma-4-e2b-it"
+        echo "    huggingface-cli download google/gemma-4-E2B-it"
     fi
 fi
 
@@ -157,9 +165,16 @@ echo
 if $INSTALL_VLLM; then
     echo "Start vLLM (in a separate terminal or tmux pane):"
     echo "  source .venv/bin/activate"
-    echo "  vllm serve google/gemma-4-e2b-it --port 8000 --served-model-name gemma4-e2b \\"
-    echo "       --gpu-memory-utilization 0.9 --max-num-seqs 16 --max-model-len 8192"
+    echo "  VLLM_USE_DEEP_GEMM=0 vllm serve google/gemma-4-E2B-it \\"
+    echo "      --port 8000 --served-model-name gemma4 \\"
+    echo "      --gpu-memory-utilization 0.55 --max-num-seqs 32 --max-model-len 4096 \\"
+    echo "      --limit-mm-per-prompt '{\"image\": 0, \"audio\": 0}' \\"
+    echo "      --enable-prefix-caching --quantization fp8"
+    echo
+    echo "Notes:"
+    echo "  - VLLM_USE_DEEP_GEMM=0 avoids a DeepGEMM FP8-warmup crash."
+    echo "  - --limit-mm-per-prompt disables image/audio (we only need text)."
     echo
     echo "Then run the pipeline:"
-    echo "  LLM_LOCAL_MODEL=gemma4-e2b python main.py --top 50 --llm --provider LOCAL"
+    echo "  LLM_LOCAL_MODEL=gemma4 python main.py --top 50 --llm --provider LOCAL"
 fi
