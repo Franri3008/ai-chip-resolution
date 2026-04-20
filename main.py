@@ -20,7 +20,11 @@ VIZ = SCRIPTS / "viz"
 sys.path.insert(0, str(CLASSIFIERS))
 sys.path.insert(0, str(LLM))
 sys.path.insert(0, str(VIZ))
-from signals import apply_training_disclosure_cap  # noqa: E402
+from signals import (  # noqa: E402
+    apply_training_disclosure_cap,
+    has_explicit_training_chip_evidence,
+    TRAINING_DISCLOSURE_CAP,
+)
 from llm_client import (  # noqa: E402
     llm_enabled,
     validate_provider,
@@ -54,25 +58,6 @@ LOW_TRUST_GITHUB_CHIP_REPOS = {
     "ultralytics/ultralytics",
 }
 
-_EXPLICIT_TRAINING_DISCLOSURE_RE = re.compile(
-    r'(?:trained?\s+on|training\s+(?:was\s+)?(?:done|performed|conducted|run)\s+on|'
-    r'training\s+hardware|training\s+infrastructure|'
-    r'fine[- ]?tun(?:ed|ing)\s+on|pre[- ]?train(?:ed|ing)\s+on|'
-    r'we\s+train(?:ed)?\b|experiments?\b.{0,60}?\bconducted\s+on|'
-    r'required\b.{0,60}?\b(?:gpu|gpus|tpu|tpus|h100|v100|a100|h200|p100|t4))',
-    re.IGNORECASE,
-)
-_HARDWARE_LITERAL_RE = re.compile(
-    r'(?:\bTPU(?:\s*v\d+)?\b|\bA100\b|\bH100\b|\bV100\b|\bH200\b|\bP100\b|\bT4\b|\bGPU(?:s)?\b|NVIDIA)',
-    re.IGNORECASE,
-)
-_HARDWARE_DURATION_RE = re.compile(
-    r'(?:'
-    r'\b\d+\s*(?:x\s*)?(?:A100|H100|V100|H200|P100|T4|TPU(?:\s*v\d+)?|GPU)\b.{0,40}?\b(?:training|compute)|'
-    r'\b(?:A100|H100|V100|H200|P100|T4|TPU(?:\s*v\d+)?)\b.{0,40}?\b(?:training|compute)'
-    r')',
-    re.IGNORECASE,
-)
 _RUNTIME_CHIP_NOISE_RE = re.compile(
     r'(?:'
     r'inference|inference\s+computations|throughput|latency|benchmark|self-hosted|speed|runtime|'
@@ -299,17 +284,11 @@ def _is_docs_only_detection_files(files):
     )
 
 
-def _has_explicit_training_chip_evidence(snippets):
-    for snippet in snippets or []:
-        text = snippet.get("snippet", "")
-        if ((_EXPLICIT_TRAINING_DISCLOSURE_RE.search(text) and _HARDWARE_LITERAL_RE.search(text))
-                or _HARDWARE_DURATION_RE.search(text)):
-            return True
-    return False
+_has_explicit_training_chip_evidence = has_explicit_training_chip_evidence
 
 
 def _is_runtime_only_chip_evidence(snippets):
-    if not snippets or _has_explicit_training_chip_evidence(snippets):
+    if not snippets or has_explicit_training_chip_evidence(snippets):
         return False
     return all(_RUNTIME_CHIP_NOISE_RE.search(snippet.get("snippet", "")) for snippet in snippets)
 
@@ -666,6 +645,10 @@ def build_results(llm_concurrency=32):
             needs_llm = False
         elif chip_conf < LLM_CHIP_CONFIDENCE_THRESHOLD:
             needs_llm = True
+        elif chip != "unknown" and abs(chip_conf - TRAINING_DISCLOSURE_CAP) < 0.01:
+            # Confidence sits exactly at the disclosure cap → cap fired on this source.
+            # Defer to the LLM rather than committing to a runtime-only guess.
+            needs_llm = True
         elif chip != "unknown" and chip_conf < LLM_CHIP_CONFLICT_THRESHOLD:
             implied = FRAMEWORK_CHIP_MAP.get(fw)
             if implied and chip != implied:
@@ -863,21 +846,21 @@ def build_results(llm_concurrency=32):
                     )
                 continue
 
-        # If chip matches runtime and no base model resolved,
-        # fall back to framework-default chip
-        if chip_matches_runtime and conclusion.get("framework", "unknown") != "unknown":
-            implied = FRAMEWORK_CHIP_MAP.get(conclusion["framework"])
-            if implied:
-                conclusion["chip_provider"] = implied
-                conclusion["chip_provider_confidence"] = 0.4
-                conclusion["chip_provider_source"] = "framework_default_derivative"
-                print(f"  Derivative framework default for {r['id']}: {conclusion['framework']} -> {implied}")
-                if TRACKER:
-                    TRACKER.override_resolution(
-                        r["id"], implied, 0.4, "framework_default_derivative",
-                        prev_chip=prev_chip, prev_source=prev_src,
-                        year=r.get("year"),
-                    )
+        # No base model resolved → prefer unknown over a framework-default guess.
+        # If the current prediction matches the runtime (apple for MLX, intel for OpenVINO),
+        # it's almost certainly an artifact of the conversion target rather than training
+        # hardware — collapse to unknown.
+        if chip_matches_runtime:
+            conclusion["chip_provider"] = "unknown"
+            conclusion["chip_provider_confidence"] = 0.0
+            conclusion["chip_provider_source"] = None
+            print(f"  Derivative with unresolved base for {r['id']}: collapsing to unknown")
+            if TRACKER:
+                TRACKER.override_resolution(
+                    r["id"], "unknown", 0.0, None,
+                    prev_chip=prev_chip, prev_source=prev_src,
+                    year=r.get("year"),
+                )
 
     # ── Ground truth evaluation ────────────────────────────────────────
     ground_truth = load_ground_truth()

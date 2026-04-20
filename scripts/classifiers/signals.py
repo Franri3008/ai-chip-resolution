@@ -253,34 +253,94 @@ DEPENDENCY_SIGNALS = {
 CHIP_PROVIDERS = set(HARDWARE_SIGNALS.keys())
 FRAMEWORKS = set(FRAMEWORK_SIGNALS.keys())
 
-MIN_SCORE_THRESHOLD = 8
+MIN_SCORE_THRESHOLD = 6
 CONFIDENCE_DIVISOR = 30
 
 TRAINING_DISCLOSURE_CAP = 0.6
 
 EXPLICIT_TRAINING_DISCLOSURE_RE = re.compile(
-    r'(?:trained?\s+on|training\s+(?:was\s+)?(?:done|performed|conducted|run)\s+on|'
-    r'training\s+hardware|training\s+infrastructure|'
+    r'(?:trained?\s+on|training\s+(?:was\s+)?(?:done|performed|conducted|run|utilized)\s+on|'
+    r'training\s+(?:hardware|infrastructure|utilized)|'
     r'fine[- ]?tun(?:ed|ing)\s+on|pre[- ]?train(?:ed|ing)\s+on|'
     r'we\s+train(?:ed)?\b|experiments?\b.{0,60}?\bconducted\s+on|'
-    r'required\b.{0,60}?\b(?:gpu|gpus|tpu|tpus|h100|v100|a100|h200|p100|t4))',
+    r'required\b.{0,60}?\b(?:gpu|gpus|tpu|tpus|h100|v100|a100|h200|p100|t4)|'
+    r'\d+(?:\.\d+)?\s*[MBK]?\s*gpu\s+hours?)',
+    re.IGNORECASE,
+)
+
+HARDWARE_LITERAL_RE = re.compile(
+    r'(?:\bTPU(?:\s*v\d+)?\b|\bA100\b|\bH100\b|\bV100\b|\bH200\b|\bP100\b|\bT4\b|'
+    r'\bMI\d{3}[Xx]?\b|\bGaudi\b|\bTrainium\b|\bInferentia\b|\bGPU(?:s)?\b|NVIDIA)',
+    re.IGNORECASE,
+)
+
+HARDWARE_DURATION_RE = re.compile(
+    r'(?:'
+    # N × CHIP … training|compute|hours
+    r'\b\d+(?:\.\d+)?\s*[MBK]?\s*(?:x\s*)?(?:A100|H100|V100|H200|P100|T4|MI\d{3}[Xx]?|'
+    r'TPU(?:\s*v\d+)?|GPU)\b.{0,60}?\b(?:training|compute|computation|hours?)|'
+    # CHIP … training|compute|hours
+    r'\b(?:A100|H100|V100|H200|P100|T4|MI\d{3}[Xx]?|TPU(?:\s*v\d+)?)\b.{0,60}?'
+    r'\b(?:training|compute|computation|hours?)|'
+    # N gpu hours … CHIP
+    r'\b\d+(?:\.\d+)?\s*[MBK]?\s*gpu\s+hours?\b.{0,80}?\b(?:A100|H100|V100|H200|P100|T4|'
+    r'MI\d{3}[Xx]?|TPU(?:\s*v\d+)?)|'
+    # hours (of) … CHIP  — covers "1000 hours of A100"
+    r'\b\d+(?:\.\d+)?\s*[MBK]?\s*hours?\b.{0,40}?\b(?:A100|H100|V100|H200|P100|T4|'
+    r'MI\d{3}[Xx]?|TPU(?:\s*v\d+)?|GPU)|'
+    # training|compute|computation (on|with|using) … CHIP  — covers "training on H100"
+    r'\b(?:training|compute|computation|trained|fine[- ]?tuned|pre[- ]?trained)\b.{0,80}?'
+    r'\b(?:A100|H100|V100|H200|P100|T4|MI\d{3}[Xx]?|TPU(?:\s*v\d+)?|Gaudi|Trainium)\b'
+    r')',
     re.IGNORECASE,
 )
 
 
-def has_training_disclosure_language(snippets):
-    """Return True if any snippet contains explicit training-disclosure phrasing."""
+def _snippet_text(snippet):
+    if isinstance(snippet, dict):
+        return snippet.get("snippet", "") or ""
+    return str(snippet) if snippet else ""
+
+
+# Conditional/hypothetical phrasing that turns a training-disclosure phrase into
+# a suggestion rather than a fact (e.g. "can be fine-tuned on H100" — users could
+# do this, not that it was done). Reject such snippets from the cap lift.
+_CONDITIONAL_DISCLOSURE_RE = re.compile(
+    r'\b(?:can|could|may|might|should|would|will|recommended|allow[s]?|able\s+to|capable\s+of)\b'
+    r'[^.]{0,40}?\b(?:be\s+)?(?:trained?|fine[- ]?tuned|pre[- ]?trained|run|deployed)\b',
+    re.IGNORECASE,
+)
+
+
+def has_explicit_training_chip_evidence(snippets):
+    """A snippet qualifies only if it co-locates a training-disclosure phrase with a
+    hardware literal, OR contains a hardware+duration phrase (e.g. "H100 GPU hours").
+
+    Snippets using conditional/hypothetical phrasing ("can be fine-tuned on H100",
+    "may be trained on") are rejected — those describe what users *could* do, not
+    what the authors actually did.
+    """
     for snippet in snippets or []:
-        text = snippet.get("snippet", "") if isinstance(snippet, dict) else str(snippet)
-        if text and EXPLICIT_TRAINING_DISCLOSURE_RE.search(text):
+        text = _snippet_text(snippet)
+        if not text:
+            continue
+        if _CONDITIONAL_DISCLOSURE_RE.search(text):
+            continue
+        if EXPLICIT_TRAINING_DISCLOSURE_RE.search(text) and HARDWARE_LITERAL_RE.search(text):
+            return True
+        if HARDWARE_DURATION_RE.search(text):
             return True
     return False
 
 
+# Back-compat alias; identical semantics to the stricter check above.
+has_training_disclosure_language = has_explicit_training_chip_evidence
+
+
 def apply_training_disclosure_cap(confidence, snippets, cap=TRAINING_DISCLOSURE_CAP):
-    """Cap confidence when no snippet shows explicit training-disclosure language."""
+    """Cap confidence at `cap` unless a snippet provides co-located training-hardware evidence."""
     if confidence <= cap:
         return confidence
-    if has_training_disclosure_language(snippets):
+    if has_explicit_training_chip_evidence(snippets):
         return confidence
     return cap

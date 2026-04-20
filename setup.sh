@@ -167,7 +167,7 @@ if $INSTALL_VLLM; then
     echo "  source .venv/bin/activate"
     echo "  VLLM_USE_DEEP_GEMM=0 vllm serve google/gemma-4-E2B-it \\"
     echo "      --port 8000 --served-model-name gemma4 \\"
-    echo "      --gpu-memory-utilization 0.55 --max-num-seqs 32 --max-model-len 4096 \\"
+    echo "      --gpu-memory-utilization 0.90 --max-num-seqs 32 --max-model-len 4096 \\"
     echo "      --limit-mm-per-prompt '{\"image\": 0, \"audio\": 0}' \\"
     echo "      --enable-prefix-caching --quantization fp8"
     echo

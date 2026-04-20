@@ -236,3 +236,76 @@ def test_training_disclosure_cap_limits_heuristic_confidence():
     # → confidence capped at 0.6 before aggregation
     assert resolved["chip_provider"] == "nvidia"
     assert resolved["chip_provider_confidence"] <= 0.6
+
+
+def test_disclosure_cap_requires_colocation_not_just_any_snippet():
+    """A 'we trained on X' snippet without a chip name must NOT lift the cap for a
+    separate runtime-only H100 snippet. Co-location is required in the same snippet."""
+    from signals import apply_training_disclosure_cap
+
+    snippets = [
+        # Hardware mention — but in a compatibility/support context only.
+        {"snippet": "The model fits into a single 80GB GPU (like NVIDIA H100 or AMD MI300X)."},
+        # Disclosure phrase — but mentions dataset, not chip.
+        {"snippet": "We trained on a curated corpus of 2T tokens."},
+    ]
+    # Start from an above-cap confidence; should be clamped to 0.6.
+    assert apply_training_disclosure_cap(0.8, snippets) == 0.6
+
+
+def test_hardware_duration_snippet_lifts_cap():
+    """Kokoro-style single snippet with hardware + duration keyword lifts the cap."""
+    from signals import apply_training_disclosure_cap
+
+    snippets = [
+        {"snippet": "Training Cost: About $1000 for 1000 hours of A100 80GB vRAM."},
+    ]
+    # Co-location of A100 + hours → cap should not fire.
+    assert apply_training_disclosure_cap(0.8, snippets) == 0.8
+
+
+def test_colocated_training_disclosure_lifts_cap():
+    """A single snippet naming both a training phrase and a chip literal lifts the cap."""
+    from signals import apply_training_disclosure_cap
+
+    snippets = [
+        {"snippet": "We trained the model on 8 H100 GPUs for 120 hours."},
+    ]
+    assert apply_training_disclosure_cap(0.8, snippets) == 0.8
+
+
+def test_conditional_fine_tuned_does_not_lift_cap():
+    """\"can be fine-tuned on H100\" is a suggestion about user fine-tuning, not a
+    disclosure about the training of the model itself. The cap must still fire."""
+    from signals import apply_training_disclosure_cap, has_explicit_training_chip_evidence
+
+    snippets = [
+        {"snippet": "The larger gpt-oss-120b can be fine-tuned on a single H100 node."},
+    ]
+    assert has_explicit_training_chip_evidence(snippets) is False
+    assert apply_training_disclosure_cap(0.8, snippets) == 0.6
+
+
+def test_capped_confidence_routes_to_llm_trigger():
+    """resolve_initial_conclusion passes through ~0.6; main trigger logic (not tested
+    here) promotes exactly-capped values to needs_llm=True. Verify the cap value
+    propagates unchanged so the trigger has something to match on."""
+    mc = {"main_github": None, "main_arxiv": None, "main_arxiv_confidence": 0.0}
+    mca = {
+        "chip_provider": "nvidia",
+        "chip_provider_confidence": 0.68,
+        "chip_snippets": [
+            {"snippet": "...fit into a single 80GB GPU (like NVIDIA H100 or AMD MI300X)..."},
+        ],
+        "framework": "pytorch",
+        "framework_confidence": 0.9,
+        "matched_sections": ["body"],
+    }
+    gha = _unknown_analysis()
+    axa = _unknown_analysis()
+
+    resolved = resolve_initial_conclusion(mc, mca, gha, axa)
+
+    assert resolved["chip_provider"] == "nvidia"
+    # Cap fired; value lands at TRAINING_DISCLOSURE_CAP.
+    assert abs(resolved["chip_provider_confidence"] - 0.6) < 0.01
