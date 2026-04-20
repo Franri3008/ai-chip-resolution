@@ -448,14 +448,19 @@ def resolve_initial_conclusion(mc, mca, gha, axa):
 
 def main():
     parser = argparse.ArgumentParser(description="Model hardware classifier pipeline")
-    parser.add_argument("--top", type=int, default=None, help="Number of top models to analyze (default: all)")
-    parser.add_argument("--update-models", action="store_true", default=False, help="Re-fetch models.csv from HuggingFace (default: use existing)")
-    parser.add_argument("--workers", type=int, default=4, help="Parallel workers per classifier script, and classifiers run in parallel (default: 4)")
+    parser.add_argument("--top", type=int, default=None,
+                        help="Max models to process per year (or total if --years not set)")
+    parser.add_argument("--years", type=str, default=None,
+                        help="Filter by model creation year(s): 2023 | 2022,2023 | 2022-2024")
+    parser.add_argument("--update-models", action="store_true", default=False,
+                        help="Re-fetch models.csv from HuggingFace (default: use existing)")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="Parallel workers per classifier script (default: 4)")
     parser.add_argument("--llm", action="store_true", default=False,
                         help="Enable LLM fallback for chip classification and candidate selection (default: disabled)")
     parser.add_argument("--provider", choices=list(VALID_PROVIDERS), default="OPENAI",
                         help="LLM provider when --llm is set: OPENAI (gpt-4o-mini, default), "
-                             "LOCAL (vLLM at localhost:8000 serving gemma-3n-e2b-it), or OPENROUTER")
+                             "LOCAL (vLLM at localhost:8000 serving gemma-4-e2b-it), or OPENROUTER")
     args = parser.parse_args()
 
     if args.llm:
@@ -464,12 +469,16 @@ def main():
 
     check_tokens()
 
-    top_args = ["--top", str(args.top)] if args.top else []
+    ingest_args = []
+    if args.top:
+        ingest_args += ["--top", str(args.top)]
+    if args.years:
+        ingest_args += ["--years", args.years]
     worker_args = ["--workers", str(args.workers)]
 
     if args.update_models:
         run(INGEST / "get_models.py")
-    run(INGEST / "get_modelcard.py", extra_args=top_args)
+    run(INGEST / "get_modelcard.py", extra_args=ingest_args)
     run(INGEST / "get_github.py")
     run(INGEST / "get_arxiv.py")
     run(CLASSIFIERS / "evaluate_github.py", extra_args=worker_args)

@@ -16,19 +16,70 @@ with open(token_path) as f:
     hf_token = f.read().strip();
 login(token=hf_token);
 
+def _parse_years(years_str: str) -> set:
+    """Parse a years string into a set of ints.
+
+    Accepts: single year "2023", comma list "2022,2023", range "2022-2024",
+    or a mix "2021,2023-2025" → {2021, 2023, 2024, 2025}.
+    """
+    years = set()
+    for part in years_str.split(","):
+        part = part.strip()
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            years.update(range(int(lo), int(hi) + 1))
+        else:
+            years.add(int(part))
+    return years
+
+
+def _row_year(row: dict) -> int | None:
+    """Return the creation year for a CSV row (created_at, fallback last_modified)."""
+    for field in ("created_at", "last_modified"):
+        val = row.get(field, "").strip()
+        if val and val != "None":
+            try:
+                return int(val[:4])
+            except (ValueError, IndexError):
+                pass
+    return None
+
+
 parser = argparse.ArgumentParser()
-parser.add_argument("--top", type=int, default=None, help="Number of models to fetch (default: all)");
-args = parser.parse_args();
+parser.add_argument("--top", type=int, default=None,
+                    help="Number of models to fetch (default: all)")
+parser.add_argument("--years", type=str, default=None,
+                    help="Filter by creation year(s). Examples: 2023  |  2022,2023  |  2022-2024")
+args = parser.parse_args()
 
 csv_path = os.path.join(os.path.dirname(__file__), "..", "..", "database", "models.csv")
 out_path = os.path.join(os.path.dirname(__file__), "..", "..", "database", "modelcards.json")
 
+target_years = _parse_years(args.years) if args.years else None
+
 with open(csv_path, newline="", encoding="utf-8") as f:
     reader = csv.DictReader(f)
-    if args.top:
-        model_ids = [row["id"] for _, row in zip(range(args.top), reader)]
+
+    if target_years:
+        # Top N per year: scan CSV in download-rank order, fill each year's
+        # bucket until it reaches --top, then combine.
+        per_year: dict[int, list[str]] = {yr: [] for yr in target_years}
+        for row in reader:
+            yr = _row_year(row)
+            if yr in per_year:
+                bucket = per_year[yr]
+                if args.top is None or len(bucket) < args.top:
+                    bucket.append(row["id"])
+        model_ids = [mid for yr in sorted(per_year) for mid in per_year[yr]]
+        for yr in sorted(per_year):
+            print(f"  {yr}: {len(per_year[yr])} models"
+                  + (f" (top {args.top})" if args.top else ""))
+        print(f"Total: {len(model_ids)} models across {len(target_years)} year(s)")
     else:
-        model_ids = [row["id"] for row in reader]
+        if args.top:
+            model_ids = [row["id"] for _, row in zip(range(args.top), reader)]
+        else:
+            model_ids = [row["id"] for row in reader]
 
 results = [];
 for model_id in tqdm(model_ids, desc="Fetching model cards"):
