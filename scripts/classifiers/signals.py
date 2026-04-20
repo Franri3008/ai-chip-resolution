@@ -329,16 +329,110 @@ def snippet_is_training_disclosure(snippet):
 
 
 def snippet_is_training_context(snippet):
-    """Looser check: contains a non-hypothetical training-disclosure phrase,
-    regardless of whether a specific chip is named. Used to surface candidate
-    quotes to the LLM — the LLM decides whether the context is about *this*
-    model's training vs a dataset / user fine-tuning."""
+    """Looser check: contains a non-hypothetical training-disclosure phrase or
+    a training-launcher invocation (torchrun/CUDA_VISIBLE_DEVICES/accelerate
+    launch/deepspeed), regardless of whether a specific chip is named. Used
+    to surface candidate quotes to the LLM — the LLM decides whether the
+    context is about *this* model's training vs a dataset / user fine-tuning."""
     text = _snippet_text(snippet)
     if not text:
         return False
     if _CONDITIONAL_DISCLOSURE_RE.search(text):
         return False
-    return bool(EXPLICIT_TRAINING_DISCLOSURE_RE.search(text))
+    if EXPLICIT_TRAINING_DISCLOSURE_RE.search(text):
+        return True
+    # Training-launcher invocations (see _TRAINING_LAUNCHER_RE below) — defined
+    # later in the file, so defer the reference at call time.
+    return bool(_TRAINING_LAUNCHER_RE.search(text))
+
+
+# Training-launcher / distributed-training invocations. These are how training
+# scripts (train.py, run_train.sh, accelerate_config.yaml, etc.) manifest
+# hardware usage in code — there's no natural-language "trained on H100" but
+# there IS `torchrun --nproc-per-node=8` or `CUDA_VISIBLE_DEVICES=0,1,2,3`.
+_TRAINING_LAUNCHER_RE = re.compile(
+    r'(?:'
+    # Shell launchers
+    r'torchrun\s+[^\n]*--nproc[-_]?per[-_]?node|'
+    r'python\s+-m\s+torch\.distributed|'
+    r'accelerate\s+launch|'
+    r'deepspeed\s+(?:--|\w+\.py)|'
+    r'\bCUDA_VISIBLE_DEVICES\s*=\s*[\d,]+|'
+    r'--num[-_]?gpus?[=\s]+\d+|'
+    r'--num[-_]?nodes?[=\s]+\d+|'
+    r'--nproc[-_]?per[-_]?node|'
+    # Python-level distributed training setup
+    r'mp\.spawn\s*\(|'
+    r'DistributedDataParallel|'
+    r'torch\.distributed\.(?:launch|init_process_group|run)|'
+    r'import\s+torch\.distributed|'
+    r'from\s+torch\.distributed|'
+    r'from\s+accelerate\s+import|'
+    r'\bAccelerator\s*\(|'
+    r'deepspeed\.init_distributed|'
+    r'init_process_group|'
+    r'ddp_find_unused_parameters|'
+    r'\bnccl\b|'
+    r'--tensor[-_]?parallel|'
+    r'--pipeline[-_]?parallel|'
+    # Explicit CUDA training ops (distinct from runtime "device = cuda:0")
+    r'\.cuda\(\)\s*$|'  # ".cuda()" at end of line is usually model .cuda() in training
+    r'model\.cuda\(\)|'
+    # TPU / XLA training
+    r'import\s+jax|xm\.optimizer_step|xm\.xla_device|'
+    r'torch_xla\.core|flax\.training'
+    r')',
+    re.IGNORECASE,
+)
+
+
+def extract_training_snippets(content, source="", max_snippets=4,
+                              left=140, right=200):
+    """Scan `content` for training-disclosure sentences that aren't hypothetical
+    fine-tuning instructions, plus training-launcher invocations in scripts.
+    Returns a list of {"snippet", "source"} dicts suitable for the LLM.
+
+    Handles two patterns of disclosure:
+    1. English prose ("we trained on N nodes …") — via EXPLICIT_TRAINING_DISCLOSURE_RE.
+    2. Training-script code (`torchrun --nproc-per-node=8`, `CUDA_VISIBLE_DEVICES=0,1,2,3`,
+       `accelerate launch`, `deepspeed train.py`) — via TRAINING_LAUNCHER_RE.
+    The LLM decides whether the context is about *this* model's training vs a
+    dataset mention or a user fine-tuning suggestion."""
+    if not content:
+        return []
+    out = []
+    seen = set()
+
+    def _emit(m, left_, right_):
+        start = max(0, m.start() - left_)
+        end = min(len(content), m.end() + right_)
+        raw = content[start:end].replace("\n", " ")
+        raw = re.sub(r'\s+', ' ', raw).strip()
+        if len(raw) < 40:
+            return
+        key = raw[:160]
+        if key in seen:
+            return
+        candidate = {"snippet": f"...{raw}...", "source": source}
+        # Prose: must pass training-context check (rejects hypothetical);
+        # launcher matches bypass that check — they're code, not prose.
+        if not snippet_is_training_context(candidate) and \
+                not _TRAINING_LAUNCHER_RE.search(candidate["snippet"]):
+            return
+        seen.add(key)
+        out.append(candidate)
+
+    for m in EXPLICIT_TRAINING_DISCLOSURE_RE.finditer(content):
+        _emit(m, left, right)
+        if len(out) >= max_snippets:
+            return out
+
+    for m in _TRAINING_LAUNCHER_RE.finditer(content):
+        _emit(m, left, right)
+        if len(out) >= max_snippets:
+            return out
+
+    return out
 
 
 def has_explicit_training_chip_evidence(snippets):

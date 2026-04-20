@@ -16,7 +16,7 @@ from tqdm import tqdm
 from signals import (
     HARDWARE_SIGNALS, FRAMEWORK_SIGNALS,
     CHIP_PROVIDERS, FRAMEWORKS, MIN_SCORE_THRESHOLD, CONFIDENCE_DIVISOR,
-    apply_training_disclosure_cap,
+    apply_training_disclosure_cap, extract_training_snippets,
 )
 
 # ── Paths ─────────────────────────────────────────────────────────────
@@ -235,6 +235,7 @@ def analyze_paper(arxiv_id):
     sections = parse_paper_sections(html)
     total_scores = {}
     all_snippets = []
+    training_snippets = []
     detection_sections = []
 
     for section_type, section_text in sections:
@@ -244,6 +245,12 @@ def analyze_paper(arxiv_id):
         if scores and section_type not in detection_sections:
             detection_sections.append(section_type)
         all_snippets.extend(snippets)
+        # Also surface training-phrase sentences (even without a chip literal
+        # nearby) for the LLM — papers often disclose "trained on N nodes of …".
+        if section_type in ("training", "method", "abstract"):
+            training_snippets.extend(extract_training_snippets(
+                section_text, source=section_type, max_snippets=3,
+            ))
 
     # Split into chips and frameworks
     chip_scores = {k: round(v, 1) for k, v in total_scores.items() if k in CHIP_PROVIDERS and v > 0}
@@ -277,6 +284,7 @@ def analyze_paper(arxiv_id):
         "frameworks_all": dict(sorted_fw),
         "detection_sections": detection_sections,
         "chip_snippets": all_snippets[:20],  # Cap snippets
+        "training_snippets": training_snippets[:8],
     }
 
 

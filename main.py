@@ -674,6 +674,8 @@ def build_results(llm_concurrency=32):
                     f"Determine the chip used to train the ORIGINAL model, not the conversion target."
                 )
 
+            gh_snips = (gha.get("chip_snippets") or []) + (gha.get("training_snippets") or [])
+            ax_snips = (axa.get("chip_snippets") or []) + (axa.get("training_snippets") or [])
             llm_queue.append((len(results), model_id, {
                 "model_name": model_id,
                 "yaml_library": yaml_library,
@@ -681,8 +683,8 @@ def build_results(llm_concurrency=32):
                 "modelcard_excerpt": mc_text[:3000],
                 "section_labeled_text": mca.get("section_labeled_text", ""),
                 "extra_context": extra_context,
-                "github_snippets": gha.get("chip_snippets") or [],
-                "arxiv_snippets": axa.get("chip_snippets") or [],
+                "github_snippets": gh_snips,
+                "arxiv_snippets": ax_snips,
             }))
             queued_indices.add(len(results))
 

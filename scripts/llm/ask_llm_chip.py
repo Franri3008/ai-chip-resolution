@@ -32,7 +32,13 @@ _CHIP_OR_TRAINING_RE = re.compile(
     r'M[1-4](?:\s*(?:Pro|Max|Ultra))?|MLX|CoreML|OpenVINO|'
     r'trained\s+(?:on|using|with)|training\s+(?:hardware|infrastructure|utilized|cost[s]?|compute)|'
     r'GPU\s+hours?|fine[- ]?tun(?:ed|ing)\s+(?:on|using|with)|'
-    r'pre[- ]?train(?:ed|ing)\s+(?:on|using|with)|compute\s+cluster)\b',
+    r'pre[- ]?train(?:ed|ing)\s+(?:on|using|with)|compute\s+cluster|'
+    # Training-launcher patterns — distributed-training invocations are legit
+    # training evidence even without a specific chip name. The LLM is instructed
+    # to map CUDA/torchrun -> nvidia, jax/xla -> tpu, rocm -> amd.
+    r'torchrun|CUDA_VISIBLE_DEVICES|DistributedDataParallel|nccl|accelerate\s+launch|'
+    r'deepspeed|mp\.spawn|--nproc[-_]?per[-_]?node|--num[-_]?gpus?|'
+    r'jax\.distributed|TPUStrategy|torch_xla|model\.cuda\(\)|torch\.cuda)\b',
     re.IGNORECASE,
 )
 
@@ -119,7 +125,16 @@ def _build_prompt(model_name, yaml_library, framework, section_labeled_text,
         f"- A cost/compute table row labelled \"Training Cost\", \"GPU hours\", or "
         f"\"Training Factors\" that names a chip (e.g. \"A100 80GB GPU hours | 1000\").\n"
         f"- An explicit \"Hardware and Software\" / \"Training Infrastructure\" section "
-        f"that names a chip.\n\n"
+        f"that names a chip.\n"
+        f"- Training-script infrastructure that implies the chip family:\n"
+        f"    * `torchrun --nproc-per-node=N`, `CUDA_VISIBLE_DEVICES=0,1,…`, `deepspeed train.py`, "
+        f"`accelerate launch`, `model.cuda()`, `torch.nn.parallel.DistributedDataParallel`, "
+        f"`nccl` backend — these are NVIDIA CUDA training and count as `nvidia`.\n"
+        f"    * `jax.distributed`, `flax`, `optax`, `torch_xla`, `TPUStrategy` — these are "
+        f"Google TPU training and count as `google_tpu`.\n"
+        f"    * `rocm`, `hipify`, `MI250`/`MI300` — AMD training → `amd`.\n"
+        f"  Only count launcher signals if they sit in this repo's training scripts, not in "
+        f"a reference/optional inference snippet.\n\n"
         f"DOES NOT COUNT — return `unknown`:\n"
         f"- Inference / deployment / runtime mentions: \"runs on CUDA\", \"supports H100\", "
         f"\"compatible with TPU\", \"device_map='cuda:0'\", \"works on M2 Mac\".\n"
@@ -129,8 +144,15 @@ def _build_prompt(model_name, yaml_library, framework, section_labeled_text,
         f"shares the same disclosure.\n"
         f"- Just a framework hint (\"transformers\", \"pytorch\") with no chip named.\n"
         f"- Generic \"GPU\" or \"CUDA\" without a specific chip or training quote.\n\n"
-        f"BE CONSERVATIVE: when the card is ambiguous or silent on training hardware, "
-        f"answer `unknown`. Never default to `nvidia` just because the framework is pytorch.\n\n"
+        f"DECIDING:\n"
+        f"- If the MODEL CARD is silent AND the EXTERNAL DISCLOSURE blocks are "
+        f"empty/absent, answer `unknown`.\n"
+        f"- If any block contains a training-script import of `torch.distributed`, "
+        f"`accelerate`, `deepspeed`, or a launcher (`torchrun`, `CUDA_VISIBLE_DEVICES`), "
+        f"commit to `nvidia` at medium confidence — these frameworks run on NVIDIA "
+        f"CUDA in practice. Similarly `jax.distributed`/`torch_xla` → `google_tpu`.\n"
+        f"- Never default to `nvidia` purely from the framework hint — you need an "
+        f"actual training-hardware or training-launcher signal.\n\n"
         f"You may quote from the MODEL CARD or from any EXTERNAL TRAINING DISCLOSURE "
         f"block shown above. The external blocks have been pre-filtered to contain only "
         f"co-located training+hardware language, so if one names a specific chip, trust "

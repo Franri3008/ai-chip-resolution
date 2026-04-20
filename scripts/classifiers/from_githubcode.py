@@ -10,7 +10,7 @@ from tqdm import tqdm
 from signals import (
     HARDWARE_SIGNALS, FRAMEWORK_SIGNALS, DEPENDENCY_SIGNALS,
     CHIP_PROVIDERS, FRAMEWORKS, MIN_SCORE_THRESHOLD, CONFIDENCE_DIVISOR,
-    apply_training_disclosure_cap,
+    apply_training_disclosure_cap, extract_training_snippets,
 )
 
 # ── Paths ─────────────────────────────────────────────────────────────
@@ -323,6 +323,17 @@ def analyze_repo(owner, repo):
 
     detection_files = []
     chip_snippets = []
+    training_snippets = []
+
+    def _accumulate_training(content, path):
+        # Training-disclosure sentences that don't sit near a chip literal
+        # (chip_snippets catches those). These are for the LLM to read —
+        # e.g. a README saying "trained on 16 nodes of our internal cluster".
+        if not content:
+            return
+        per_file_budget = 2 if _DOCS_FILE_RE.search(path) else 3
+        new = extract_training_snippets(content, source=path, max_snippets=per_file_budget)
+        training_snippets.extend(new)
 
     # Fetch and scan Tier 1 files
     for path in tier1:
@@ -334,6 +345,7 @@ def analyze_repo(owner, repo):
             if scores:
                 detection_files.append(path)
             chip_snippets.extend(snips)
+            _accumulate_training(content, path)
 
     # If top chip score < threshold, also scan Tier 2 (no penalty — purpose multipliers handle weighting)
     chip_scores = {k: v for k, v in total_scores.items() if k in CHIP_PROVIDERS}
@@ -348,6 +360,7 @@ def analyze_repo(owner, repo):
                 if scores:
                     detection_files.append(path)
                 chip_snippets.extend(snips)
+                _accumulate_training(content, path)
 
     # Split scores into chips and frameworks
     chip_scores = {k: v for k, v in total_scores.items() if k in CHIP_PROVIDERS and v > 0}
@@ -380,6 +393,9 @@ def analyze_repo(owner, repo):
     else:
         top_fw_name, top_fw_sc, fw_conf = "unknown", 0, 0.0
 
+    # Cap training_snippets globally to keep the LLM prompt bounded.
+    training_snippets = training_snippets[:10]
+
     return {
         "chip_provider": top_chip_name,
         "chip_provider_score": top_chip_sc,
@@ -391,6 +407,7 @@ def analyze_repo(owner, repo):
         "frameworks_all": dict(sorted_fw),
         "detection_files": detection_files,
         "chip_snippets": chip_snippets,
+        "training_snippets": training_snippets,
     }
 
 

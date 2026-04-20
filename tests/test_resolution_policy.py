@@ -274,6 +274,52 @@ def test_colocated_training_disclosure_lifts_cap():
     assert apply_training_disclosure_cap(0.8, snippets) == 0.8
 
 
+def test_extract_training_snippets_surfaces_generic_training_phrase():
+    """Captures training-disclosure sentences from raw README/paper text even
+    when no chip literal sits nearby — this is the github-README case we
+    couldn't recover previously (parler-tts, chronos-bolt, nomic-ai, ...)."""
+    from signals import extract_training_snippets
+
+    readme = (
+        "# Parler-TTS\n\n"
+        "We trained on 16 nodes of our internal cluster for approximately 90 hours.\n"
+        "Run inference with `device = 'cuda:0'` for lower latency.\n"
+    )
+    snips = extract_training_snippets(readme, source="README.md")
+    assert len(snips) >= 1
+    # Every snippet must be anchored on a training-disclosure phrase.
+    assert any("trained on 16 nodes" in s["snippet"] for s in snips)
+
+
+def test_extract_training_snippets_captures_training_launcher():
+    """Training scripts disclose hardware through launcher commands, not prose.
+    `torchrun --nproc-per-node=8`, `CUDA_VISIBLE_DEVICES=0,1,2,3`, `accelerate
+    launch`, `deepspeed train.py` are all explicit training-infra signals."""
+    from signals import extract_training_snippets
+
+    script = (
+        "#!/bin/bash\n"
+        "export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7\n"
+        "torchrun --nproc-per-node=8 train.py --num-epochs 100\n"
+    )
+    snips = extract_training_snippets(script, source="scripts/run.sh")
+    assert len(snips) >= 1
+    combined = " ".join(s["snippet"] for s in snips)
+    assert "CUDA_VISIBLE_DEVICES" in combined or "torchrun" in combined
+
+
+def test_extract_training_snippets_rejects_hypothetical():
+    """'Users can fine-tune on H100' is a suggestion about consumers, not the
+    authors' training — extractor must drop it."""
+    from signals import extract_training_snippets
+
+    readme = (
+        "Users can be fine-tuned on a single H100 node to adapt this model. "
+        "Recommended: 4xA100 for full pre-training."
+    )
+    assert extract_training_snippets(readme, source="README.md") == []
+
+
 def test_snippet_is_training_context_accepts_generic_training_phrase():
     """snippet_is_training_context is the looser helper used to surface quotes
     to the LLM — it should accept 'trained on N GPUs' even without a chip literal,
