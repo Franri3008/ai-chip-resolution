@@ -5,20 +5,487 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Model Classification Dashboard</title>
-    <link rel="stylesheet" href="styles.css">
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #fafafa;
+            color: #222;
+            font-size: 13px;
+            height: 100vh;
+            overflow: hidden;
+        }
+
         .header {
+            padding: 14px 0 10px;
             text-align: center;
+            border-bottom: 1px solid #ddd;
+            background: #fff;
         }
 
         .header select {
+            font-size: 14px;
+            padding: 6px 12px;
+            border: 1px solid #bbb;
+            border-radius: 4px;
             min-width: 380px;
+            background: #fff;
             vertical-align: middle;
         }
 
         .hf-btn {
+            font-size: 14px;
+            padding: 6px 12px;
+            border: 1px solid #bbb;
+            border-radius: 4px;
+            background: #fff;
+            text-decoration: none;
+            color: #222;
             margin-left: 10px;
+            display: none;
             vertical-align: middle;
+        }
+
+        .hf-btn:hover {
+            background: #f0f0f0;
+        }
+
+        .diagram {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 16px 24px 12px;
+            height: calc(100vh - 50px);
+            overflow-y: auto;
+        }
+
+        /* Nodes */
+        .node {
+            border: 1.5px solid #ccc;
+            border-radius: 6px;
+            padding: 10px 14px;
+            background: #fff;
+            width: 520px;
+        }
+
+        .node-title {
+            font-weight: 700;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid #eee;
+            color: #444;
+        }
+
+        .node.dimmed {
+            opacity: 0.35;
+        }
+
+        /* Two-col layout inside nodes */
+        .two-col {
+            display: flex;
+            gap: 20px;
+        }
+
+        .two-col>div {
+            flex: 1;
+        }
+
+        .col-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            color: #999;
+            margin-bottom: 3px;
+        }
+
+        /* Key-value */
+        .kv {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 2px 0;
+        }
+
+        .kv .k {
+            color: #777;
+            font-size: 12px;
+        }
+
+        .kv .v {
+            font-weight: 600;
+        }
+
+        /* Connector arrows with decision labels */
+        .connector {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 2px 0;
+            width: 520px;
+        }
+
+        .connector-line {
+            width: 1.5px;
+            height: 12px;
+            background: #bbb;
+        }
+
+        .connector-label {
+            font-size: 11px;
+            color: #666;
+            background: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            padding: 2px 10px;
+            margin: 2px 0;
+            white-space: nowrap;
+        }
+
+        .connector-label.decision {
+            background: #fff8e1;
+            border-color: #ffe082;
+            color: #8d6e00;
+        }
+
+        .connector-label.llm-call {
+            background: #f3e5f5;
+            border-color: #ce93d8;
+            color: #6a1b9a;
+        }
+
+        .connector-label.skip {
+            background: #ffebee;
+            border-color: #ef9a9a;
+            color: #b71c1c;
+        }
+
+        .connector-label.win {
+            background: #e8f5e9;
+            border-color: #a5d6a7;
+            color: #2e7d32;
+        }
+
+        .connector-arrow {
+            font-size: 14px;
+            color: #bbb;
+            line-height: 1;
+        }
+
+        /* Confidence bar - full width, color = confidence level */
+        .conf-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin: 1px 0;
+        }
+
+        .conf-track {
+            flex: 1;
+            height: 7px;
+            background: #f0f0f0;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .conf-fill {
+            height: 100%;
+            border-radius: 3px;
+        }
+
+        .conf-pct {
+            font-size: 11px;
+            color: #888;
+            min-width: 30px;
+            text-align: right;
+        }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 1px 7px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .badge-modelcard {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .badge-github_code {
+            background: #cce5ff;
+            color: #004085;
+        }
+
+        .badge-heuristic {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .badge-llm,
+        .badge-llm_chip {
+            background: #f3e5f5;
+            color: #6a1b9a;
+        }
+
+        .badge-arxiv_paper {
+            background: #fff0e6;
+            color: #bf360c;
+        }
+
+        .badge-base_model {
+            background: #e8eaf6;
+            color: #283593;
+        }
+
+        .badge-framework_default_derivative {
+            background: #fce4ec;
+            color: #880e4f;
+        }
+
+        .badge-unknown {
+            background: #eee;
+            color: #888;
+        }
+
+        /* Chip / framework value colors */
+        .val-nvidia {
+            color: #2e7d32;
+        }
+
+        .val-google_tpu {
+            color: #1565c0;
+        }
+
+        .val-intel {
+            color: #00838f;
+        }
+
+        .val-amd {
+            color: #c62828;
+        }
+
+        .val-apple {
+            color: #555;
+        }
+
+        .val-unknown {
+            color: #aaa;
+        }
+
+        .val-pytorch {
+            color: #e65100;
+        }
+
+        .val-tensorflow {
+            color: #1565c0;
+        }
+
+        .val-jax {
+            color: #6a1b9a;
+        }
+
+        .val-onnx {
+            color: #00838f;
+        }
+
+        .val-mxnet {
+            color: #c62828;
+        }
+
+        .val-paddlepaddle {
+            color: #0d47a1;
+        }
+
+        /* Bar fill colors */
+        .fill-nvidia {
+            background: #4caf50;
+        }
+
+        .fill-google_tpu {
+            background: #42a5f5;
+        }
+
+        .fill-intel {
+            background: #26c6da;
+        }
+
+        .fill-amd {
+            background: #ef5350;
+        }
+
+        .fill-apple {
+            background: #9e9e9e;
+        }
+
+        .fill-unknown {
+            background: #d0d0d0;
+        }
+
+        .fill-pytorch {
+            background: #ff9800;
+        }
+
+        .fill-tensorflow {
+            background: #42a5f5;
+        }
+
+        .fill-jax {
+            background: #ab47bc;
+        }
+
+        .fill-onnx {
+            background: #26c6da;
+        }
+
+        .fill-mxnet {
+            background: #ef5350;
+        }
+
+        .fill-paddlepaddle {
+            background: #1976d2;
+        }
+
+        /* GitHub link list */
+        .link-list {
+            font-size: 11px;
+            margin: 3px 0;
+        }
+
+        .link-item {
+            margin: 1px 0;
+        }
+
+        .link-item a {
+            color: #1565c0;
+            text-decoration: none;
+            word-break: break-all;
+        }
+
+        .link-item a:hover {
+            text-decoration: underline;
+        }
+
+        .link-item.selected {
+            font-weight: 600;
+        }
+
+        .link-item.rejected {
+            color: #aaa;
+        }
+
+        .link-item.rejected a {
+            color: #aaa;
+        }
+
+        /* Toggle button for link list */
+        .toggle-links-btn {
+            background: none;
+            border: none;
+            color: #666;
+            font-size: 11px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-bottom: 4px;
+            margin-top: 4px;
+        }
+
+        .toggle-links-btn:hover {
+            color: #222;
+        }
+
+        .toggle-links-btn svg {
+            width: 12px;
+            height: 12px;
+            transition: transform 0.2s;
+        }
+
+        .toggle-links-btn.expanded svg {
+            transform: rotate(180deg);
+        }
+
+        /* Conclusion */
+        .node-conclusion {
+            transform: scale(1.05);
+            margin: 15px 0 25px 0;
+            border-color: #bbb;
+            border-width: 2px;
+        }
+
+        .conclusion-row {
+            display: flex;
+            gap: 14px;
+        }
+
+        .conclusion-dim {
+            flex: 1;
+            padding: 6px 10px;
+            border-left: 3px solid #ccc;
+            border-radius: 0 4px 4px 0;
+        }
+
+        .conclusion-dim.src-modelcard {
+            border-left-color: #ffc107;
+            background: #fffdf0;
+        }
+
+        .conclusion-dim.src-github_code {
+            border-left-color: #42a5f5;
+            background: #f5faff;
+        }
+
+        .conclusion-dim.src-arxiv_paper {
+            border-left-color: #ff7043;
+            background: #fff8f5;
+        }
+
+        .conclusion-val {
+            font-size: 16px;
+            font-weight: 700;
+            margin: 2px 0;
+        }
+
+        /* Section pills */
+        .pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 3px;
+            margin-top: 3px;
+        }
+
+        .pill {
+            font-size: 10px;
+            padding: 1px 5px;
+            background: #f0f0f0;
+            border-radius: 3px;
+            color: #666;
+        }
+
+        /* Detection files */
+        .det-files code {
+            background: #f5f5f5;
+            padding: 1px 4px;
+            border-radius: 2px;
+            font-size: 10px;
+            color: #555;
+        }
+
+        .empty {
+            color: #999;
+            font-style: italic;
+            text-align: center;
+            margin-top: 60px;
         }
     </style>
 </head>
@@ -26,7 +493,8 @@
 <body>
 
     <div class="header">
-        <select id="sort-select" style="vertical-align: middle; margin-right: 10px; min-width: auto;">
+        <select id="sort-select"
+            style="font-size: 14px; padding: 6px 12px; border: 1px solid #bbb; border-radius: 4px; background: #fff; vertical-align: middle; margin-right: 10px; min-width: auto;">
             <option value="desc" selected>Default Order</option>
             <option value="asc">Alphabetical</option>
         </select>
@@ -229,22 +697,19 @@
                     </div>
                 `;
             } else if (currentStatsMode === 'year') {
-                const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-                const byMonth = {};
+                const byYear = {};
                 RAW_DATA.forEach(d => {
-                    if (d.year == null || d.month == null) return;
-                    const key = d.year * 100 + d.month;
+                    if (d.year == null) return;
+                    const yr = d.year;
                     const provider = (d.conclusion && d.conclusion.chip_provider) ? d.conclusion.chip_provider : 'unknown';
-                    if (!byMonth[key]) byMonth[key] = {};
-                    byMonth[key][provider] = (byMonth[key][provider] || 0) + 1;
+                    if (!byYear[yr]) byYear[yr] = {};
+                    byYear[yr][provider] = (byYear[yr][provider] || 0) + 1;
                 });
 
-                const monthKeys = Object.keys(byMonth).map(Number).sort((a, b) => a - b);
-                const years = Array.from(new Set(monthKeys.map(k => Math.floor(k / 100)))).sort((a, b) => a - b);
+                const years = Object.keys(byYear).map(Number).sort((a, b) => a - b);
 
-                if (monthKeys.length < 2) {
-                    chartHTML = `<p class="empty" style="margin-top:0;">Year Mode needs at least 2 months of data with a <code>year</code> and <code>month</code> field.</p>`;
+                if (years.length < 2) {
+                    chartHTML = `<p class="empty" style="margin-top:0;">Year Mode needs results spanning at least 2 years. Re-run the pipeline with <code>--years 2023,2024</code> (or similar).</p>`;
                 } else {
                     const colors = {
                         'nvidia': '#4caf50',
@@ -258,7 +723,7 @@
                     };
 
                     const providers = new Set();
-                    monthKeys.forEach(k => Object.keys(byMonth[k]).forEach(p => providers.add(p)));
+                    years.forEach(y => Object.keys(byYear[y]).forEach(p => providers.add(p)));
                     const providerList = Array.from(providers).sort((a, b) => {
                         if (a === 'unknown') return 1;
                         if (b === 'unknown') return -1;
@@ -269,11 +734,11 @@
 
                     const series = {};
                     providerList.forEach(p => {
-                        series[p] = monthKeys.map(k => {
-                            const monthData = byMonth[k];
-                            const count = monthData[p] || 0;
+                        series[p] = years.map(y => {
+                            const yearData = byYear[y];
+                            const count = yearData[p] || 0;
                             if (metric === 'percent') {
-                                const t = Object.values(monthData).reduce((a, b) => a + b, 0);
+                                const t = Object.values(yearData).reduce((a, b) => a + b, 0);
                                 return t > 0 ? count / t * 100 : 0;
                             }
                             return count;
@@ -291,11 +756,11 @@
                         })();
 
                     const W = 720, H = 380;
-                    const padL = 55, padR = 30, padT = 20, padB = 50;
+                    const padL = 55, padR = 30, padT = 20, padB = 40;
                     const plotW = W - padL - padR;
                     const plotH = H - padT - padB;
 
-                    const xFor = (i) => padL + (monthKeys.length === 1 ? plotW / 2 : i / (monthKeys.length - 1) * plotW);
+                    const xFor = (i) => padL + (years.length === 1 ? plotW / 2 : i / (years.length - 1) * plotW);
                     const yFor = (v) => padT + plotH - (v / niceMax * plotH);
 
                     const gridTicks = 5;
@@ -308,20 +773,11 @@
                         grid += `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-size="11" fill="#888">${label}</text>`;
                     }
 
-                    const labelStride = Math.max(1, Math.ceil(monthKeys.length / 12));
                     let xLabels = '';
-                    monthKeys.forEach((k, i) => {
+                    years.forEach((y, i) => {
                         const x = xFor(i);
-                        const m = k % 100;
-                        const y = Math.floor(k / 100);
-                        const isJan = m === 1;
-                        const tickLen = isJan ? 6 : 3;
-                        const tickColor = isJan ? '#888' : '#bbb';
-                        xLabels += `<line x1="${x}" x2="${x}" y1="${padT + plotH}" y2="${padT + plotH + tickLen}" stroke="${tickColor}" stroke-width="1"/>`;
-                        if (i % labelStride === 0 || i === monthKeys.length - 1) {
-                            const lbl = `${MONTH_NAMES[m - 1]} '${String(y).slice(-2)}`;
-                            xLabels += `<text x="${x}" y="${padT + plotH + 22}" text-anchor="middle" font-size="11" fill="#555">${lbl}</text>`;
-                        }
+                        xLabels += `<text x="${x}" y="${padT + plotH + 22}" text-anchor="middle" font-size="12" fill="#555">${y}</text>`;
+                        xLabels += `<line x1="${x}" x2="${x}" y1="${padT + plotH}" y2="${padT + plotH + 5}" stroke="#888" stroke-width="1"/>`;
                     });
 
                     const axes = `
@@ -331,27 +787,20 @@
 
                     let lines = '';
                     let legendHTML = '';
-                    const pointRadius = monthKeys.length > 24 ? 2.5 : 3.5;
                     providerList.forEach(p => {
                         const color = colors[p] || '#999';
                         const points = series[p].map((v, i) => `${xFor(i)},${yFor(v)}`).join(' ');
-                        lines += `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+                        lines += `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
                         series[p].forEach((v, i) => {
                             const tip = metric === 'percent' ? v.toFixed(1) + '%' : v;
-                            const k = monthKeys[i];
-                            const m = k % 100;
-                            const y = Math.floor(k / 100);
-                            const monthLabel = `${MONTH_NAMES[m - 1]} ${y}`;
-                            lines += `<circle cx="${xFor(i)}" cy="${yFor(v)}" r="${pointRadius}" fill="${color}" stroke="#fff" stroke-width="1"><title>${p} ${monthLabel}: ${tip}</title></circle>`;
+                            lines += `<circle cx="${xFor(i)}" cy="${yFor(v)}" r="4" fill="${color}" stroke="#fff" stroke-width="1.5"><title>${p} ${years[i]}: ${tip}</title></circle>`;
                         });
                         legendHTML += `<div style="display:flex; align-items:center; gap:6px;"><span style="display:inline-block; width:14px; height:14px; background:${color}; border-radius:3px;"></span> ${p}</div>`;
                     });
 
                     let totalsHTML = '<div style="margin-top:18px; display:flex; justify-content:center; gap:18px; font-size:11px; color:#888;">';
                     years.forEach(y => {
-                        const t = monthKeys
-                            .filter(k => Math.floor(k / 100) === y)
-                            .reduce((acc, k) => acc + Object.values(byMonth[k]).reduce((a, b) => a + b, 0), 0);
+                        const t = Object.values(byYear[y]).reduce((a, b) => a + b, 0);
                         totalsHTML += `<div>${y}: <strong style="color:#444">${t}</strong> models</div>`;
                     });
                     totalsHTML += '</div>';
@@ -493,7 +942,7 @@
             `;
         }
 
-        fetch('https://huggingface.co/datasets/Franri/model-chips-data/resolve/main/results.json')
+        fetch('../database/results.json')
             .then(r => r.json())
             .then(data => {
                 RAW_DATA = data;
@@ -504,7 +953,7 @@
                 document.getElementById('diagram').innerHTML = drawGlobalStats();
             })
             .catch(e => {
-                document.getElementById('diagram').innerHTML = '<p class="empty">Failed to load data from Hugging Face: ' + e.message + '</p>';
+                document.getElementById('diagram').innerHTML = '<p class="empty">Failed to load ../database/results.json: ' + e.message + '</p>';
             });
 
         document.getElementById('model-select').addEventListener('change', function () {
