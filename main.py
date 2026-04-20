@@ -615,8 +615,12 @@ def build_results(llm_concurrency=32):
                 "extra_context": extra_context,
             }))
 
-        results.append({
+        result_rec = {
             "id": model_id,
+        }
+        if mc.get("year") is not None:
+            result_rec["year"] = mc.get("year")
+        result_rec.update({
             "modelcard_analysis": {
                 "chip_provider": mca.get("chip_provider", "unknown"),
                 "chip_provider_confidence": mc_chip_conf,
@@ -655,6 +659,7 @@ def build_results(llm_concurrency=32):
                 "framework_confidence": fw_conf,
             },
         })
+        results.append(result_rec)
 
     # ── LLM chip fallback (async parallelized) ────────────────────────
     llm_chip_calls = 0

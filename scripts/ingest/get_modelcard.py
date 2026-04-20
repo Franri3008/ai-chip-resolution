@@ -64,6 +64,8 @@ out_path = os.path.join(os.path.dirname(__file__), "..", "..", "database", "mode
 
 target_years = _parse_years(args.years) if args.years else None
 
+id_to_year: dict[str, int] = {}
+
 with open(csv_path, newline="", encoding="utf-8") as f:
     reader = csv.DictReader(f)
 
@@ -77,6 +79,7 @@ with open(csv_path, newline="", encoding="utf-8") as f:
                 bucket = per_year[yr]
                 if args.top is None or len(bucket) < args.top:
                     bucket.append(row["id"])
+                    id_to_year[row["id"]] = yr
         model_ids = [mid for yr in sorted(per_year) for mid in per_year[yr]]
         for yr in sorted(per_year):
             print(f"  {yr}: {len(per_year[yr])} models"
@@ -84,15 +87,24 @@ with open(csv_path, newline="", encoding="utf-8") as f:
         print(f"Total: {len(model_ids)} models across {len(target_years)} year(s)")
     else:
         if args.top:
-            model_ids = [row["id"] for _, row in zip(range(args.top), reader)]
+            rows = [row for _, row in zip(range(args.top), reader)]
         else:
-            model_ids = [row["id"] for row in reader]
+            rows = list(reader)
+        model_ids = [row["id"] for row in rows]
+        for row in rows:
+            yr = _row_year(row)
+            if yr is not None:
+                id_to_year[row["id"]] = yr
 
 def _fetch(model_id):
     try:
         card = ModelCard.load(model_id)
         if card.content and card.content.strip():
-            return {"id": model_id, "modelcard": card.content}
+            rec = {"id": model_id, "modelcard": card.content}
+            yr = id_to_year.get(model_id)
+            if yr is not None:
+                rec["year"] = yr
+            return rec
     except Exception:
         pass
     return None
