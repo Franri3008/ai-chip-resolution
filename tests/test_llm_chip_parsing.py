@@ -18,7 +18,8 @@ def test_llm_none_found_forces_unknown():
     assert confidence == 0.0
 
 
-def test_llm_low_confidence_forces_unknown():
+def test_llm_low_confidence_with_valid_quote_still_commits():
+    """Low confidence + valid quote → commit at 0.4. Low is noisy, not forbidden."""
     card = "We trained on 8 H100 GPUs for 100 hours."
     answer = (
         f"training_evidence: {card}\n"
@@ -26,8 +27,8 @@ def test_llm_low_confidence_forces_unknown():
         "confidence: low\n"
     )
     conclusion, confidence = _parse_answer(answer, card_text=card)
-    assert conclusion is None
-    assert confidence == 0.0
+    assert conclusion == "nvidia"
+    assert confidence == 0.4
 
 
 def test_llm_evidence_not_in_card_forces_unknown():
@@ -52,7 +53,7 @@ def test_llm_valid_evidence_commits_to_chip():
     )
     conclusion, confidence = _parse_answer(answer, card_text=card)
     assert conclusion == "nvidia"
-    assert confidence == 0.7
+    assert confidence == 0.8
 
 
 def test_llm_evidence_without_chip_literal_forces_unknown():
@@ -68,7 +69,7 @@ def test_llm_evidence_without_chip_literal_forces_unknown():
     assert confidence == 0.0
 
 
-def test_llm_medium_confidence_caps_at_0_5():
+def test_llm_medium_confidence_is_0_6():
     card = "Model was fine-tuned on A100 80GB for 50 hours."
     answer = (
         "training_evidence: fine-tuned on A100 80GB for 50 hours\n"
@@ -77,4 +78,17 @@ def test_llm_medium_confidence_caps_at_0_5():
     )
     conclusion, confidence = _parse_answer(answer, card_text=card)
     assert conclusion == "nvidia"
-    assert confidence == 0.5
+    assert confidence == 0.6
+
+
+def test_llm_hypothetical_quote_forces_unknown():
+    """'can be fine-tuned on H100' is a suggestion, not a disclosure."""
+    card = "The larger sibling gpt-oss-120b can be fine-tuned on a single H100 node."
+    answer = (
+        "training_evidence: can be fine-tuned on a single H100 node\n"
+        "conclusion: nvidia\n"
+        "confidence: high\n"
+    )
+    conclusion, confidence = _parse_answer(answer, card_text=card)
+    assert conclusion is None
+    assert confidence == 0.0

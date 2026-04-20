@@ -427,15 +427,28 @@ def analyze_modelcard(modelcard_text, model_id=""):
     else:
         top_fw_name, top_fw_sc, fw_conf = "unknown", 0, 0.0
 
-    # Build section-labeled text for LLM consumption
+    # Build section-labeled text for LLM consumption.
+    # Ordering: surface training-bearing content first so the LLM's limited window
+    # isn't eaten by YAML license boilerplate (e.g. Llama 3.1's ~8KB license).
+    # Priority: training > compatibility > body > references; YAML last (trimmed).
+    _PRIORITY = {"training": 0, "compatibility": 2, "body": 3, "references": 4}
     labeled_sections = []
-    if yaml_text.strip():
-        labeled_sections.append(f"=== [YAML FRONTMATTER] ===\n{yaml_text.strip()}")
-    for section_type, section_text in sections:
-        label = section_type.upper().replace("_", " ")
+    ordered = sorted(
+        enumerate(sections),
+        key=lambda it: (_PRIORITY.get(it[1][0], 3), it[0]),
+    )
+    for _, (section_type, section_text) in ordered:
         trimmed = section_text.strip()
-        if trimmed:
-            labeled_sections.append(f"=== [{label}] ===\n{trimmed}")
+        if not trimmed:
+            continue
+        label = section_type.upper().replace("_", " ")
+        labeled_sections.append(f"=== [{label}] ===\n{trimmed}")
+    # YAML last, trimmed — the signal it carries (library_name/tags) is already
+    # passed to the LLM via the `yaml_library` kwarg, so the full block is low-value.
+    yaml_trimmed = yaml_text.strip()
+    if yaml_trimmed:
+        yaml_tail = yaml_trimmed[:800]
+        labeled_sections.append(f"=== [YAML FRONTMATTER] ===\n{yaml_tail}")
     section_labeled_text = "\n\n".join(labeled_sections)
 
     return {

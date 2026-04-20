@@ -274,6 +274,33 @@ def test_colocated_training_disclosure_lifts_cap():
     assert apply_training_disclosure_cap(0.8, snippets) == 0.8
 
 
+def test_snippet_is_training_context_accepts_generic_training_phrase():
+    """snippet_is_training_context is the looser helper used to surface quotes
+    to the LLM — it should accept 'trained on N GPUs' even without a chip literal,
+    but reject conditional / hypothetical phrasings."""
+    from signals import snippet_is_training_context, snippet_is_training_disclosure
+
+    # Generic-but-real disclosure (no chip/GPU word) → looser helper accepts,
+    # strict one rejects because HARDWARE_LITERAL_RE needs a chip or "GPU".
+    generic = {"snippet": "We trained on 16 nodes of our internal cluster for 90 hours."}
+    assert snippet_is_training_context(generic) is True
+    assert snippet_is_training_disclosure(generic) is False
+
+    # "trained on 8 GPUs" — strict helper accepts (GPU is a hardware literal).
+    with_gpu = {"snippet": "We trained on 8 GPUs for 90 hours."}
+    assert snippet_is_training_disclosure(with_gpu) is True
+    assert snippet_is_training_context(with_gpu) is True
+
+    # Hypothetical → both reject.
+    hypothetical = {"snippet": "Users can be fine-tuned on a single H100 node."}
+    assert snippet_is_training_context(hypothetical) is False
+    assert snippet_is_training_disclosure(hypothetical) is False
+
+    # Pure runtime → both reject (no training phrase).
+    runtime = {"snippet": "device = torch.device('cuda:0') if torch.cuda.is_available() else 'cpu'"}
+    assert snippet_is_training_context(runtime) is False
+
+
 def test_conditional_fine_tuned_does_not_lift_cap():
     """\"can be fine-tuned on H100\" is a suggestion about user fine-tuning, not a
     disclosure about the training of the model itself. The cap must still fire."""

@@ -312,25 +312,38 @@ _CONDITIONAL_DISCLOSURE_RE = re.compile(
 )
 
 
-def has_explicit_training_chip_evidence(snippets):
-    """A snippet qualifies only if it co-locates a training-disclosure phrase with a
-    hardware literal, OR contains a hardware+duration phrase (e.g. "H100 GPU hours").
-
-    Snippets using conditional/hypothetical phrasing ("can be fine-tuned on H100",
-    "may be trained on") are rejected — those describe what users *could* do, not
-    what the authors actually did.
-    """
-    for snippet in snippets or []:
-        text = _snippet_text(snippet)
-        if not text:
-            continue
-        if _CONDITIONAL_DISCLOSURE_RE.search(text):
-            continue
-        if EXPLICIT_TRAINING_DISCLOSURE_RE.search(text) and HARDWARE_LITERAL_RE.search(text):
-            return True
-        if HARDWARE_DURATION_RE.search(text):
-            return True
+def snippet_is_training_disclosure(snippet):
+    """Does this single snippet co-locate a training phrase with a hardware literal,
+    or contain a hardware+duration phrase? Rejects conditional/hypothetical phrasing.
+    (Strict — the chip-confidence cap and aggregation policy rely on this.)"""
+    text = _snippet_text(snippet)
+    if not text:
+        return False
+    if _CONDITIONAL_DISCLOSURE_RE.search(text):
+        return False
+    if EXPLICIT_TRAINING_DISCLOSURE_RE.search(text) and HARDWARE_LITERAL_RE.search(text):
+        return True
+    if HARDWARE_DURATION_RE.search(text):
+        return True
     return False
+
+
+def snippet_is_training_context(snippet):
+    """Looser check: contains a non-hypothetical training-disclosure phrase,
+    regardless of whether a specific chip is named. Used to surface candidate
+    quotes to the LLM — the LLM decides whether the context is about *this*
+    model's training vs a dataset / user fine-tuning."""
+    text = _snippet_text(snippet)
+    if not text:
+        return False
+    if _CONDITIONAL_DISCLOSURE_RE.search(text):
+        return False
+    return bool(EXPLICIT_TRAINING_DISCLOSURE_RE.search(text))
+
+
+def has_explicit_training_chip_evidence(snippets):
+    """Any snippet qualifies as a training disclosure."""
+    return any(snippet_is_training_disclosure(s) for s in (snippets or []))
 
 
 # Back-compat alias; identical semantics to the stricter check above.

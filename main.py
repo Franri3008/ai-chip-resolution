@@ -681,6 +681,8 @@ def build_results(llm_concurrency=32):
                 "modelcard_excerpt": mc_text[:3000],
                 "section_labeled_text": mca.get("section_labeled_text", ""),
                 "extra_context": extra_context,
+                "github_snippets": gha.get("chip_snippets") or [],
+                "arxiv_snippets": axa.get("chip_snippets") or [],
             }))
             queued_indices.add(len(results))
 
@@ -792,6 +794,29 @@ def build_results(llm_concurrency=32):
                 llm_chip_calls += 1
                 final_chip, final_conf, final_src = llm_chip, llm_conf, "llm_chip"
                 print(f"  LLM chip override for {model_id}: {llm_chip} (conf={llm_conf}, Cost: ${cost:.6f})")
+            else:
+                # LLM returned explicit "unknown" (no verdict committed). Only override
+                # the heuristic when it was a modelcard/runtime guess that couldn't be
+                # confirmed. Leave higher-confidence non-modelcard sources (explicit
+                # GitHub training code, arXiv training-section paper) alone — the LLM
+                # only saw the modelcard, so it lacked the evidence those sources had.
+                # Override to unknown when the heuristic hit is weak (<= cap). The LLM
+                # only read the modelcard, but low-confidence github/arXiv predictions
+                # are usually library-repo noise that correlates with an uninformative
+                # card — dropping them matches what the LLM would say with full context.
+                safe_to_override = (
+                    final_src == "modelcard"
+                    or final_src == "unknown"
+                    or final_src is None
+                    or final_conf <= TRAINING_DISCLOSURE_CAP + 0.01
+                )
+                if final_chip != "unknown" and safe_to_override:
+                    prev_chip, prev_src = final_chip, final_src
+                    r["conclusion"]["chip_provider"] = "unknown"
+                    r["conclusion"]["chip_provider_confidence"] = 0.0
+                    r["conclusion"]["chip_provider_source"] = None
+                    final_chip, final_conf, final_src = "unknown", 0.0, None
+                    print(f"  LLM confirmed unknown for {model_id} (was {prev_chip}@{prev_src})")
 
             if TRACKER:
                 TRACKER.record_llm_chip(model_id, final_chip, final_conf, cost)
