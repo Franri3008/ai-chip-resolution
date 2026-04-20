@@ -252,6 +252,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--workers", type=int, default=4,
                         help="Parallel workers for LLM fallback calls (default: 4)")
+    parser.add_argument("--llm-concurrency", type=int, default=None,
+                        help="Max concurrent in-flight LLM requests. Defaults to --workers.")
     args = parser.parse_args()
 
     with open(data_path, encoding="utf-8") as f:
@@ -275,7 +277,7 @@ def main():
         if llm_queue:
             print(f"  LLM disabled (--llm not set). Skipping {len(llm_queue)} GitHub candidate-selection call(s).");
     else:
-        set_concurrency(args.workers)
+        set_concurrency(args.llm_concurrency or args.workers)
 
         async def _run_all_llm():
             async def _one(item):

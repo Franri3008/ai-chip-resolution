@@ -456,6 +456,10 @@ def main():
                         help="Re-fetch models.csv from HuggingFace (default: use existing)")
     parser.add_argument("--workers", type=int, default=4,
                         help="Parallel workers per classifier script (default: 4)")
+    parser.add_argument("--llm-concurrency", type=int, default=32,
+                        help="Max concurrent in-flight LLM requests (default: 32). "
+                             "Decoupled from --workers so the vLLM server can batch "
+                             "without being throttled by the classifier thread pool.")
     parser.add_argument("--llm", action="store_true", default=False,
                         help="Enable LLM fallback for chip classification and candidate selection (default: disabled)")
     parser.add_argument("--provider", choices=list(VALID_PROVIDERS), default="OPENAI",
@@ -474,15 +478,17 @@ def main():
         ingest_args += ["--top", str(args.top)]
     if args.years:
         ingest_args += ["--years", args.years]
+    modelcard_args = ingest_args + ["--workers", str(args.workers)]
     worker_args = ["--workers", str(args.workers)]
+    llm_concurrency_args = ["--llm-concurrency", str(args.llm_concurrency)]
 
     if args.update_models:
         run(INGEST / "get_models.py")
-    run(INGEST / "get_modelcard.py", extra_args=ingest_args)
+    run(INGEST / "get_modelcard.py", extra_args=modelcard_args)
     run(INGEST / "get_github.py")
     run(INGEST / "get_arxiv.py")
-    run(CLASSIFIERS / "evaluate_github.py", extra_args=worker_args)
-    run(CLASSIFIERS / "evaluate_arxiv.py", extra_args=worker_args)
+    run(CLASSIFIERS / "evaluate_github.py", extra_args=worker_args + llm_concurrency_args)
+    run(CLASSIFIERS / "evaluate_arxiv.py", extra_args=worker_args + llm_concurrency_args)
     run_parallel(
         [
             CLASSIFIERS / "from_modelcard.py",
@@ -492,10 +498,10 @@ def main():
         extra_args=worker_args,
     )
 
-    build_results(workers=args.workers)
+    build_results(llm_concurrency=args.llm_concurrency)
 
 
-def build_results(workers=4):
+def build_results(llm_concurrency=32):
     import asyncio
 
     db = Path(__file__).parent / "database"
@@ -503,7 +509,7 @@ def build_results(workers=4):
     sys.path.insert(0, str(LLM))
     if llm_enabled():
         import llm_client as _llm_client
-        _llm_client.set_concurrency(workers)
+        _llm_client.set_concurrency(llm_concurrency)
         from ask_llm_chip import ask_llm_chip
     else:
         ask_llm_chip = None

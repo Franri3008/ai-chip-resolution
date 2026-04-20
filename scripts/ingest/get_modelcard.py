@@ -3,6 +3,7 @@ import csv
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 csv.field_size_limit(sys.maxsize)
 
@@ -53,6 +54,9 @@ parser.add_argument("--top", type=int, default=None,
                     help="Number of models to fetch (default: all)")
 parser.add_argument("--years", type=str, default=None,
                     help="Filter by creation year(s). Examples: 2023  |  2022,2023  |  2022-2024")
+parser.add_argument("--workers", type=int, default=8,
+                    help="Concurrent HF model-card fetches (default: 8). "
+                         "HF reads are I/O-bound, so this scales well on wide machines.")
 args = parser.parse_args()
 
 csv_path = os.path.join(os.path.dirname(__file__), "..", "..", "database", "models.csv")
@@ -84,14 +88,23 @@ with open(csv_path, newline="", encoding="utf-8") as f:
         else:
             model_ids = [row["id"] for row in reader]
 
-results = [];
-for model_id in tqdm(model_ids, desc="Fetching model cards"):
+def _fetch(model_id):
     try:
         card = ModelCard.load(model_id)
         if card.content and card.content.strip():
-            results.append({"id": model_id, "modelcard": card.content})
+            return {"id": model_id, "modelcard": card.content}
     except Exception:
         pass
+    return None
+
+
+results = []
+with ThreadPoolExecutor(max_workers=args.workers) as ex:
+    futures = [ex.submit(_fetch, mid) for mid in model_ids]
+    for fut in tqdm(as_completed(futures), total=len(futures), desc="Fetching model cards"):
+        out = fut.result()
+        if out is not None:
+            results.append(out)
 
 with open(out_path, "w", encoding="utf-8") as f:
     json.dump(results, f, indent=2, ensure_ascii=False)
