@@ -456,7 +456,9 @@ def main():
 
     parser = argparse.ArgumentParser(description="Model hardware classifier pipeline")
     parser.add_argument("--top", type=int, default=None,
-                        help="Max models to process per year (or total if --years not set)")
+                        help="When --years is set: top N models per MONTH within the year range "
+                             "(e.g. --top 50 --years 2022-2023 → up to 50 × 24 = 1200 models). "
+                             "Otherwise: total cap.")
     parser.add_argument("--years", type=str, default=None,
                         help="Filter by model creation year(s): 2023 | 2022,2023 | 2022-2024")
     parser.add_argument("--update-models", action="store_true", default=False,
@@ -715,6 +717,8 @@ def build_results(llm_concurrency=32):
         }
         if mc.get("year") is not None:
             result_rec["year"] = mc.get("year")
+        if mc.get("month") is not None:
+            result_rec["month"] = mc.get("month")
         result_rec.update({
             "modelcard_analysis": {
                 "chip_provider": mca.get("chip_provider", "unknown"),

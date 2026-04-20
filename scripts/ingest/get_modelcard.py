@@ -49,9 +49,26 @@ def _row_year(row: dict) -> int | None:
     return None
 
 
+def _row_year_month(row: dict) -> tuple:
+    """Return (year, month) from CSV row or (None, None) if unparseable.
+    Expects ISO-8601-ish timestamps like 2024-07-15T....Z."""
+    for field in ("created_at", "last_modified"):
+        val = row.get(field, "").strip()
+        if val and val != "None":
+            try:
+                year = int(val[:4])
+                month = int(val[5:7])
+                if 1 <= month <= 12:
+                    return year, month
+            except (ValueError, IndexError):
+                pass
+    return None, None
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--top", type=int, default=None,
-                    help="Number of models to fetch (default: all)")
+                    help="When --years is set: top N models per MONTH within the year range "
+                         "(so 2022-2023 = 24 monthly buckets × N). Otherwise: total cap.")
 parser.add_argument("--years", type=str, default=None,
                     help="Filter by creation year(s). Examples: 2023  |  2022,2023  |  2022-2024")
 parser.add_argument("--workers", type=int, default=8,
@@ -65,26 +82,43 @@ out_path = os.path.join(os.path.dirname(__file__), "..", "..", "database", "mode
 target_years = _parse_years(args.years) if args.years else None
 
 id_to_year: dict[str, int] = {}
+id_to_month: dict[str, int] = {}
 
 with open(csv_path, newline="", encoding="utf-8") as f:
     reader = csv.DictReader(f)
 
     if target_years:
-        # Top N per year: scan CSV in download-rank order, fill each year's
-        # bucket until it reaches --top, then combine.
-        per_year: dict[int, list[str]] = {yr: [] for yr in target_years}
+        # Top N per (year, month): scan CSV in download-rank order and fill
+        # each month's bucket until it reaches --top. A 2022-2023 range is
+        # 24 monthly buckets, so `--top 50 --years 2022-2023` yields up to 1200.
+        per_month: dict[tuple, list[str]] = {
+            (yr, mo): [] for yr in target_years for mo in range(1, 13)
+        }
         for row in reader:
-            yr = _row_year(row)
-            if yr in per_year:
-                bucket = per_year[yr]
-                if args.top is None or len(bucket) < args.top:
-                    bucket.append(row["id"])
-                    id_to_year[row["id"]] = yr
-        model_ids = [mid for yr in sorted(per_year) for mid in per_year[yr]]
-        for yr in sorted(per_year):
-            print(f"  {yr}: {len(per_year[yr])} models"
-                  + (f" (top {args.top})" if args.top else ""))
-        print(f"Total: {len(model_ids)} models across {len(target_years)} year(s)")
+            yr, mo = _row_year_month(row)
+            if yr is None or mo is None:
+                continue
+            key = (yr, mo)
+            if key not in per_month:
+                continue
+            bucket = per_month[key]
+            if args.top is None or len(bucket) < args.top:
+                bucket.append(row["id"])
+                id_to_year[row["id"]] = yr
+                id_to_month[row["id"]] = mo
+        model_ids = [mid for key in sorted(per_month) for mid in per_month[key]]
+        # Per-year summary (aggregate across months for a compact log).
+        per_year_totals: dict[int, int] = {yr: 0 for yr in target_years}
+        non_empty_months = 0
+        for (yr, mo), bucket in per_month.items():
+            per_year_totals[yr] += len(bucket)
+            if bucket:
+                non_empty_months += 1
+        for yr in sorted(per_year_totals):
+            print(f"  {yr}: {per_year_totals[yr]} models"
+                  + (f" (top {args.top}/month × 12)" if args.top else ""))
+        print(f"Total: {len(model_ids)} models across "
+              f"{non_empty_months}/{12*len(target_years)} monthly buckets")
     else:
         if args.top:
             rows = [row for _, row in zip(range(args.top), reader)]
@@ -92,9 +126,11 @@ with open(csv_path, newline="", encoding="utf-8") as f:
             rows = list(reader)
         model_ids = [row["id"] for row in rows]
         for row in rows:
-            yr = _row_year(row)
+            yr, mo = _row_year_month(row)
             if yr is not None:
                 id_to_year[row["id"]] = yr
+            if mo is not None:
+                id_to_month[row["id"]] = mo
 
 def _fetch(model_id):
     try:
@@ -104,6 +140,9 @@ def _fetch(model_id):
             yr = id_to_year.get(model_id)
             if yr is not None:
                 rec["year"] = yr
+            mo = id_to_month.get(model_id)
+            if mo is not None:
+                rec["month"] = mo
             return rec
     except Exception:
         pass
