@@ -23,6 +23,7 @@ sys.path.insert(0, str(VIZ))
 from signals import (  # noqa: E402
     apply_training_disclosure_cap,
     has_explicit_training_chip_evidence,
+    launcher_implied_chip,
     TRAINING_DISCLOSURE_CAP,
 )
 from llm_client import (  # noqa: E402
@@ -640,6 +641,14 @@ def build_results(llm_concurrency=32):
         base_model_id = mca.get("base_model")
         runtime_library = mca.get("runtime_library")
 
+        # Strong github training-launcher evidence short-circuits the LLM.
+        # If github_code training scripts (train.py, run_train.sh, etc.) contain
+        # a distributed-training launcher (torchrun / CUDA_VISIBLE_DEVICES /
+        # torch.distributed / jax.distributed / rocm), that's a high-precision
+        # chip-family signal. Gemma tends to refuse to commit on these, so we
+        # trust the heuristic and skip the LLM call entirely.
+        gh_launcher_chip = launcher_implied_chip(gha.get("training_snippets") or [])
+
         needs_llm = False
         if chip == "unknown" and quality_blocked_chip:
             needs_llm = False
@@ -657,6 +666,19 @@ def build_results(llm_concurrency=32):
         # For derivative models with a base_model in our dataset, defer to Pass 2
         if is_derivative and needs_llm and base_model_id and base_model_id in mc_analysis:
             needs_llm = False
+
+        # Short-circuit: when the heuristic already picked this chip AND the
+        # github training scripts contain a distributed-training launcher (in
+        # a train*.py / scripts/*.sh), skip the LLM. The launcher is
+        # corroborating evidence for the heuristic, and Gemma tends to refuse
+        # to commit on launcher-only snippets (regresses those rows to unknown).
+        # We deliberately do NOT promote unknown → launcher-chip here: that
+        # would fire on library repos (FlagEmbedding/colbert/etc.) where the
+        # quality-block correctly zeroed the github signal.
+        if (gh_launcher_chip and not is_derivative
+                and chip != "unknown" and chip == gh_launcher_chip):
+            needs_llm = False
+            chip_conf = max(chip_conf, 0.55)
 
         if needs_llm:
             mc_text = mc.get("modelcard", "")

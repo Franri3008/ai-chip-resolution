@@ -386,6 +386,70 @@ _TRAINING_LAUNCHER_RE = re.compile(
 )
 
 
+# A file path that looks like training code (Python train scripts, bash
+# launchers under scripts/, accelerate / deepspeed configs). Docs/READMEs
+# don't count — we want the launcher to sit in code that actually runs.
+_TRAINING_FILE_PATH_RE = re.compile(
+    r'(?:^|/)(?:'
+    r'(?:train|finetune|pretrain|run_train|run_finetune|run_pretrain)[^/]*\.(?:py|sh)|'
+    r'scripts?/[^/]*\.(?:sh|py)|'
+    r'accelerate[^/]*\.ya?ml|'
+    r'ds_config[^/]*\.json|'
+    r'deepspeed[^/]*\.json'
+    r')$',
+    re.IGNORECASE,
+)
+
+
+_LAUNCHER_CHIP_CLASSIFIER = [
+    # (regex on snippet text, implied chip)
+    (re.compile(r'\b(?:jax\.distributed|TPUStrategy|torch_xla\.core|flax\.training|xm\.(?:optimizer_step|xla_device))\b', re.IGNORECASE), "google_tpu"),
+    (re.compile(r'\b(?:rocm|hipify|rccl|MI\d{3}[Xx]?)\b', re.IGNORECASE), "amd"),
+    # Default: CUDA / PyTorch distributed / DeepSpeed / Accelerate → nvidia
+    (re.compile(
+        r'torchrun|CUDA_VISIBLE_DEVICES|torch\.distributed|DistributedDataParallel|'
+        r'accelerate\s+launch|from\s+accelerate\s+import|\bAccelerator\s*\(|'
+        r'deepspeed|\bnccl\b|init_process_group|ddp_find_unused_parameters|'
+        r'--nproc[-_]?per[-_]?node|model\.cuda\(\)',
+        re.IGNORECASE), "nvidia"),
+]
+
+
+def launcher_implied_chip(training_snippets):
+    """If any `training_snippet` has a launcher pattern AND sits in a training-code
+    file (train.py, scripts/*.sh, accelerate_config.yaml, ...), return the chip
+    that the launcher implies (nvidia / google_tpu / amd). Otherwise None.
+
+    This lets us short-circuit the LLM in cases where github training scripts
+    clearly encode the chip family even though no chip literal (A100/H100) is
+    named — Gemma tends to over-reject these."""
+    if not training_snippets:
+        return None
+    # TPU/AMD evidence wins over NVIDIA when both appear (explicit non-CUDA stacks).
+    tpu_hit = amd_hit = nv_hit = False
+    for s in training_snippets:
+        src = s.get("source", "") or s.get("file", "") or s.get("section", "")
+        if not _TRAINING_FILE_PATH_RE.search(src or ""):
+            continue
+        text = s.get("snippet", "") if isinstance(s, dict) else str(s)
+        for rx, chip in _LAUNCHER_CHIP_CLASSIFIER:
+            if rx.search(text):
+                if chip == "google_tpu":
+                    tpu_hit = True
+                elif chip == "amd":
+                    amd_hit = True
+                elif chip == "nvidia":
+                    nv_hit = True
+                break
+    if tpu_hit:
+        return "google_tpu"
+    if amd_hit:
+        return "amd"
+    if nv_hit:
+        return "nvidia"
+    return None
+
+
 def extract_training_snippets(content, source="", max_snippets=4,
                               left=140, right=200):
     """Scan `content` for training-disclosure sentences that aren't hypothetical

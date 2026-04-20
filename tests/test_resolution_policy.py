@@ -291,6 +291,45 @@ def test_extract_training_snippets_surfaces_generic_training_phrase():
     assert any("trained on 16 nodes" in s["snippet"] for s in snips)
 
 
+def test_launcher_implied_chip_classifies_families():
+    """torchrun / CUDA_VISIBLE_DEVICES in a train*.py → nvidia;
+    jax.distributed / torch_xla in a train*.py → google_tpu;
+    rocm → amd. Requires the snippet to sit in a training-code file."""
+    from signals import launcher_implied_chip
+
+    # NVIDIA (torchrun in a train script)
+    nv = [{
+        "snippet": "torchrun --nproc-per-node=8 train.py --config configs/train.yaml",
+        "source": "scripts/run_train.sh",
+    }]
+    assert launcher_implied_chip(nv) == "nvidia"
+
+    # TPU (jax distributed in a train script)
+    tpu = [{
+        "snippet": "import jax.distributed as jdist\njdist.initialize()",
+        "source": "train_jax.py",
+    }]
+    assert launcher_implied_chip(tpu) == "google_tpu"
+
+    # AMD (rocm in a train script)
+    amd = [{
+        "snippet": "import torch\n# Using ROCm backend via torch.distributed",
+        "source": "scripts/train.sh",
+    }]
+    assert launcher_implied_chip(amd) == "amd"
+
+    # Launcher sitting in a README — doesn't count, README isn't a training-code file.
+    readme = [{
+        "snippet": "Run training with `torchrun --nproc-per-node=8 train.py`",
+        "source": "README.md",
+    }]
+    assert launcher_implied_chip(readme) is None
+
+    # No snippets → None
+    assert launcher_implied_chip([]) is None
+    assert launcher_implied_chip(None) is None
+
+
 def test_extract_training_snippets_captures_training_launcher():
     """Training scripts disclose hardware through launcher commands, not prose.
     `torchrun --nproc-per-node=8`, `CUDA_VISIBLE_DEVICES=0,1,2,3`, `accelerate
