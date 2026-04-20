@@ -2,6 +2,9 @@ import argparse
 import csv
 import json
 import os
+import sys
+
+csv.field_size_limit(sys.maxsize)
 
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1";
 
