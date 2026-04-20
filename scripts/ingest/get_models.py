@@ -24,6 +24,7 @@ models = api.list_models(
 fields = ["id", "downloads", "likes", "pipeline_tag", "created_at", "last_modified", "tags", "card_data"]
 
 out_path = os.path.join(os.path.dirname(__file__), "..", "..", "database", "models.csv")
+os.makedirs(os.path.dirname(out_path), exist_ok=True)
 with open(out_path, "w", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
