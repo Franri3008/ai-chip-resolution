@@ -103,6 +103,42 @@ def test_low_conf_modelcard_runtime_usage_is_ignored():
     assert resolved["chip_provider"] == "unknown"
 
 
+def test_explicit_modelcard_ascend_training_is_kept():
+    """A modelcard explicitly disclosing Ascend training should resolve to
+    huawei_ascend, not be overridden by a competing low-confidence github
+    nvidia signal (mirrors the Tele-AI/TeleChat case)."""
+    mc = {"main_github": "https://github.com/Tele-AI/TeleChat",
+          "main_arxiv": None, "main_arxiv_confidence": 0.0}
+    mca = {
+        "chip_provider": "huawei_ascend",
+        "chip_provider_confidence": 0.6,
+        "chip_snippets": [
+            {"snippet": "...trained entirely on domestic Chinese computing power... MindSpore... Ascend Atlas 800T A2..."},
+        ],
+        "framework": "mindspore",
+        "framework_confidence": 0.7,
+        "matched_sections": ["training", "body"],
+    }
+    gha = {
+        "chip_provider": "nvidia",
+        "chip_provider_confidence": 0.45,
+        "chip_snippets": [
+            {"snippet": "...import torch ... model.cuda() ..."},
+        ],
+        "framework": "pytorch",
+        "framework_confidence": 0.7,
+        "detection_files": ["inference/run.py"],
+    }
+    axa = _unknown_analysis()
+
+    resolved = resolve_initial_conclusion(mc, mca, gha, axa)
+
+    # mc (huawei_ascend, 0.6) - gh (nvidia, 0.45) margin = 0.15
+    # gh does not exceed mc by required MIN_MARGIN, so mc wins
+    assert resolved["chip_provider"] == "huawei_ascend"
+    assert resolved["chip_provider_source"] == "modelcard"
+
+
 def test_explicit_modelcard_training_tpu_is_kept():
     mc = {"main_github": None, "main_arxiv": None, "main_arxiv_confidence": 0.0}
     mca = {

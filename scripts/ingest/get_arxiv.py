@@ -6,17 +6,33 @@ from pathlib import Path
 
 data_path = Path(__file__).parent.parent.parent / "database" / "modelcards.json"
 
-# Matches arxiv.org/abs/{id} and arxiv.org/pdf/{id}[.pdf] with optional version suffix
+# Matches https://arxiv.org/abs/{id} and pdf/{id}[.pdf] with optional version
+# suffix. The end-anchor accepts whitespace, common URL terminators AND `}` so
+# BibTeX `url={https://arxiv.org/abs/X}` blocks parse correctly.
 arxiv_re = re.compile(
-    r'https?://arxiv\.org/(?:abs|pdf)/([\w.]+?)(?:v\d+)?(?:\.pdf)?(?=[\s\])\"\'>,:;]|$)',
+    r'https?://arxiv\.org/(?:abs|pdf)/([\w.]+?)(?:v\d+)?(?:\.pdf)?(?=[\s\])\"\'>,:;}]|$)',
+    re.IGNORECASE,
+)
+
+# BibTeX eprint pattern: `eprint = {2407.20750}` or `eprint={2407.20750v1}`.
+# Many cards include only the eprint, no full URL. Recover those too.
+arxiv_eprint_re = re.compile(
+    r'eprint\s*=\s*\{?\s*(\d{4}\.\d{4,5})(?:v\d+)?\s*\}?',
     re.IGNORECASE,
 )
 
 
 def extract_arxiv_links(text):
     """Return deduplicated list of normalized arxiv abs URLs from text."""
-    ids = list(dict.fromkeys(arxiv_re.findall(text)))
-    return [f"https://arxiv.org/abs/{aid}" for aid in ids]
+    ids = list(arxiv_re.findall(text))
+    ids.extend(arxiv_eprint_re.findall(text))
+    seen = set()
+    out = []
+    for aid in ids:
+        if aid not in seen:
+            seen.add(aid)
+            out.append(aid)
+    return [f"https://arxiv.org/abs/{aid}" for aid in out]
 
 
 def main():

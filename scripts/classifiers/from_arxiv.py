@@ -81,7 +81,11 @@ _TRAINING_RE = re.compile(
 
 _TAG_RE = re.compile(r'<[^>]+>')
 _HEADING_RE = re.compile(r'<(h[1-6])[^>]*>(.*?)</\1>', re.IGNORECASE | re.DOTALL)
-_SECTION_SPLIT_RE = re.compile(r'(<h[1-3][^>]*>)', re.IGNORECASE)
+# Full heading block (open + content + close) — captured as one piece by re.split.
+# The previous version captured only the opening tag, so the heading-detector
+# (which expected <hN>…</hN> in the same part) never matched and every paper
+# collapsed into a single 10000-char "body" section, hiding the training section.
+_SECTION_SPLIT_RE = re.compile(r'(<h[1-3][^>]*>.*?</h[1-3]>)', re.IGNORECASE | re.DOTALL)
 
 
 def _strip_tags(html):
@@ -120,17 +124,17 @@ def parse_paper_sections(html):
     if abstract_m:
         sections.append(("abstract", _strip_tags(abstract_m.group(1))[:5000]))
 
-    # Split by h1-h3 headings
+    # Split by full <hN>…</hN> heading blocks (captured by _SECTION_SPLIT_RE).
     parts = _SECTION_SPLIT_RE.split(html)
     current_type = "body"
     current_text = ""
 
     for part in parts:
-        heading_m = re.match(r'<h[1-3][^>]*>(.*?)</h[1-3]>', part, re.IGNORECASE | re.DOTALL)
+        heading_m = re.fullmatch(r'<h[1-3][^>]*>(.*?)</h[1-3]>', part, re.IGNORECASE | re.DOTALL)
         if heading_m:
             # Save previous section
             if current_text.strip():
-                sections.append((current_type, _strip_tags(current_text)[:10000]))
+                sections.append((current_type, _strip_tags(current_text)[:15000]))
             current_type = _classify_heading(heading_m.group(1))
             current_text = ""
         else:
@@ -138,7 +142,7 @@ def parse_paper_sections(html):
 
     # Save last section
     if current_text.strip():
-        sections.append((current_type, _strip_tags(current_text)[:10000]))
+        sections.append((current_type, _strip_tags(current_text)[:15000]))
 
     return sections
 
@@ -200,11 +204,17 @@ def scan_section(text, section_type):
 # ── Paper analysis ────────────────────────────────────────────────────
 
 def fetch_paper_html(arxiv_id):
-    """Fetch HTML rendering from ar5iv."""
+    """Fetch HTML rendering from ar5iv.
+
+    A 12s timeout is enough for ar5iv when the paper renders. When ar5iv
+    can't or won't render the paper (newer submissions, transient errors)
+    a longer timeout would just stall the worker pool. Any rendering
+    failure → return None and the caller treats the paper as unknown.
+    """
     url = f"https://ar5iv.labs.arxiv.org/html/{arxiv_id}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "model-classifier/1.0"})
-        resp = urllib.request.urlopen(req, timeout=30)
+        resp = urllib.request.urlopen(req, timeout=12)
         return resp.read().decode("utf-8", errors="replace")
     except Exception:
         return None
@@ -325,7 +335,7 @@ def _analyze_model(model):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workers", type=int, default=4,
+    parser.add_argument("--workers", type=int, default=16,
                         help="Parallel worker threads (default: 4)")
     args = parser.parse_args()
 

@@ -1,5 +1,6 @@
 import argparse
 import concurrent.futures
+import functools
 import json
 import os
 import re
@@ -30,6 +31,18 @@ if GITHUB_TOKEN:
     HEADERS["Authorization"] = f"token {GITHUB_TOKEN}"
 
 API_BASE = "https://api.github.com"
+
+# Connection-pooled Session shared across worker threads. requests.get() at
+# the module level opens a fresh TLS connection per call (~80-150 ms each) —
+# with several thousand fetches per pipeline run this dominates the wall-time
+# of from_githubcode. urllib3's connection pool inside Session is thread-safe.
+_SESSION = requests.Session()
+_SESSION.headers.update(HEADERS)
+_HTTP_ADAPTER = requests.adapters.HTTPAdapter(
+    pool_connections=32, pool_maxsize=32, max_retries=0,
+)
+_SESSION.mount("https://", _HTTP_ADAPTER)
+_SESSION.mount("http://", _HTTP_ADAPTER)
 
 # ── Tier 1 file patterns (always fetch) ──────────────────────────────
 
@@ -139,16 +152,20 @@ REPO_PRIORS = {
 # ── GitHub API helpers ───────────────────────────────────────────────
 
 
+# Many models in a quarterly sweep share the same upstream repo (e.g. dozens
+# link to huggingface/transformers). Memoising tree fetches and raw-file reads
+# avoids re-fetching the same content per model. lru_cache is thread-safe.
+@functools.lru_cache(maxsize=8192)
 def api_get(url):
-    """GET from GitHub API with rate-limit handling."""
+    """GET from GitHub API with rate-limit handling. Cached per-process."""
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp = _SESSION.get(url, timeout=15)
         if resp.status_code == 403 and "rate limit" in resp.text.lower():
             reset = int(resp.headers.get("X-RateLimit-Reset", 0))
             wait = max(0, reset - int(time.time())) + 1
             print(f"  Rate limited. Waiting {wait}s...")
             time.sleep(min(wait, 120))
-            resp = requests.get(url, headers=HEADERS, timeout=15)
+            resp = _SESSION.get(url, timeout=15)
         if resp.status_code == 200:
             return resp.json()
         return None
@@ -173,11 +190,13 @@ def get_repo_tree(owner, repo):
     return [item["path"] for item in resp["tree"] if item["type"] == "blob"]
 
 
+@functools.lru_cache(maxsize=8192)
 def get_file_content(owner, repo, path):
-    """Fetch raw file content from GitHub (via raw.githubusercontent.com)."""
+    """Fetch raw file content from GitHub (via raw.githubusercontent.com).
+    Cached per-process — many models point at the same library repos."""
     url = f"https://raw.githubusercontent.com/{owner}/{repo}/HEAD/{path}"
     try:
-        resp = requests.get(url, timeout=15)
+        resp = _SESSION.get(url, timeout=15)
         if resp.status_code == 200:
             return resp.text[:100_000]  # Cap at 100KB
         return None
@@ -448,7 +467,7 @@ def _analyze_model(model):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workers", type=int, default=4,
+    parser.add_argument("--workers", type=int, default=16,
                         help="Parallel worker threads (default: 4)")
     args = parser.parse_args()
 

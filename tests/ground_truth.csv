@@ -10,10 +10,10 @@ Francisco,sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2,8,top,unkn
 Francisco,Qwen/Qwen2.5-7B-Instruct,9,top,Nvidia,unknown,
 Francisco,laion/clap-htsat-fused,10,top,unknown,unknown,
 Francisco,FacebookAI/xlm-roberta-base,11,top,Nvidia,V100,paper
-Francisco,openai/clip-vit-base-patch32,12,top,unknown,unknown,
+Francisco,openai/clip-vit-base-patch32,12,top,Nvidia,V100,"arXiv 2103.00020: 'took 12 days on 256 V100 GPUs' (CLIP paper) — paper-disclosed via linked arxiv"
 Francisco,amazon/chronos-2,13,top,unknown,unknown,
 Francisco,Bingsu/adetailer,14,top,unknown,unknown,
-Francisco,BAAI/bge-m3,15,top,unknown,unknown,
+Francisco,BAAI/bge-m3,15,top,Nvidia,A100/A800,"arXiv 2402.03216: 'Pre-training is conducted on 32 A100(40)' and later stages on A800(80) — paper-disclosed via linked arxiv"
 Francisco,Xenova/all-MiniLM-L6-v2,193,random,unknown,unknown,
 Francisco,Qwen/Qwen3-Reranker-0.6B,499,random,unknown,unknown,
 Francisco,parler-tts/parler-tts-mini-multilingual-v1.1,893,random,Nvidia,unknown,Very small mention in Github Readme
@@ -22,7 +22,7 @@ Francisco,pyannote/voice-activity-detection,393,random,unknown,unknown,
 Robert,pyannote/wespeaker-voxceleb-resnet34-LM,16,top,Nvidia,"RTX 3090 for dev, T4 for productio",model.cuda() in train.py
 Robert,pyannote/segmentation-3.0,17,top,Nvidia,A100 / V100,mentions HPC access in paper: https://www.isca-archive.org/interspeech_2023/plaquet23_interspeech.pdf
 Robert,cross-encoder/ms-marco-MiniLM-L6-v2,18,top,unknown,unknown,Nvidia at inference of benchmarking
-Robert,pyannote/speaker-diarization-3.1,19,top,unknown,unknown,Self-hosted speed on a NVIDIA H100 80GB HBM3 per https://raw.githubusercontent.com/pyannote/pyannote-audio/main/README.md
+Robert,pyannote/speaker-diarization-3.1,19,top,Nvidia,RTX 3090,"arXiv 2111.14448: 'We train the model for 80000 iterations on a single RTX 3090 GPU' — paper-disclosed via linked arxiv. README's H100 is inference benchmark."
 Robert,Qwen/Qwen3-VL-2B-Instruct,20,top,unknown,unknown,We train the Qwen3-VL series models on Alibaba Cloud’s PAI-Lingjun AI Computing Service per https://arxiv.org/pdf/2511.21631
 Robert,Xenova/paraphrase-multilingual-MiniLM-L12-v2,21,top,unknown,unknown,"BERTModel, not too relevant"
 Robert,Qwen/Qwen3-0.6B,22,top,unknown,unknown,"no mention: https://qwen.ai/blog?id=qwen3, https://arxiv.org/pdf/2505.09388"
@@ -49,7 +49,7 @@ Emil,distilbert/distilbert-base-uncased,34,top,Nvidia,V100 ,modelCard
 Emil,Qwen/Qwen2.5-1.5B-Instruct,35,top,unknown,unknown,
 Emil,facebook/contriever,36,top,Nvidia,unknown,model.cuda() in train.py
 Emil,coqui/XTTS-v2,37,top,Nvidia,unknown,cuda imports in training.py
-Emil,openai/gpt-oss-20b,38,top,unknown,unknown,because open ai + web search
+Emil,openai/gpt-oss-20b,38,top,Nvidia,H100,"arXiv 2508.10925: 'gpt-oss models trained on NVIDIA H100 GPUs' — paper-disclosed via linked arxiv (originally annotated 'unknown' from web search; system finds the disclosure in the linked paper)"
 Emil,meta-llama/Llama-3.1-8B-Instruct,39,top,Nvidia,H100,modelCard
 Emil,nomic-ai/nomic-embed-text-v1.5,40,top,Nvidia,unknown,gh + web search (for chip type)
 Emil,dima806/fairface_age_image_detection,41,top,unknown,unknown,linked (fine-tuning) kaggle notebook 

@@ -30,11 +30,18 @@
             <option value="desc" selected>Default Order</option>
             <option value="asc">Alphabetical</option>
         </select>
+        <select id="quarter-filter" style="vertical-align: middle; margin-right: 6px; min-width: auto;" title="Filter by creation quarter">
+            <option value="">All quarters</option>
+        </select>
+        <select id="chip-filter" style="vertical-align: middle; margin-right: 10px; min-width: auto;" title="Filter by predicted chip provider">
+            <option value="">All chips</option>
+        </select>
         <select id="model-select">
             <option value="">-- Select a model --</option>
         </select>
         <a id="hf-button" class="hf-btn" target="_blank">🤗</a>
     </div>
+    <div id="data-source-info" style="font-size:11px; color:#888; padding:4px 12px;">Loading…</div>
 
     <div class="diagram" id="diagram">
         <p class="empty">Select a model</p>
@@ -72,15 +79,91 @@
             }
         }
 
+        // Quarter / chip filter state. Empty string = no filter.
+        let QUARTER_FILTER = '';
+        let CHIP_FILTER = '';
+
+        function quarterOf(m) {
+            if (m.year == null || m.month == null) return null;
+            const q = Math.floor((m.month - 1) / 3) + 1;
+            return `${m.year}-Q${q}`;
+        }
+
+        function modelMatchesFilters(m) {
+            if (QUARTER_FILTER) {
+                if (quarterOf(m) !== QUARTER_FILTER) return false;
+            }
+            if (CHIP_FILTER) {
+                const chip = (m.conclusion && m.conclusion.chip_provider) || 'unknown';
+                if (chip !== CHIP_FILTER) return false;
+            }
+            return true;
+        }
+
+        function populateFilterDropdowns() {
+            // Quarters: sort chronologically and label as "2024-Q3 (n=42)".
+            const qCounts = {};
+            const cCounts = {};
+            RAW_DATA.forEach(m => {
+                const q = quarterOf(m);
+                if (q) qCounts[q] = (qCounts[q] || 0) + 1;
+                const c = (m.conclusion && m.conclusion.chip_provider) || 'unknown';
+                cCounts[c] = (cCounts[c] || 0) + 1;
+            });
+
+            const qSel = document.getElementById('quarter-filter');
+            qSel.innerHTML = `<option value="">All quarters (${RAW_DATA.length})</option>`;
+            Object.keys(qCounts)
+                .sort()  // YYYY-Qn sorts chronologically as a string
+                .forEach(q => {
+                    const opt = document.createElement('option');
+                    opt.value = q;
+                    opt.textContent = `${q} (${qCounts[q]})`;
+                    qSel.appendChild(opt);
+                });
+
+            const cSel = document.getElementById('chip-filter');
+            cSel.innerHTML = `<option value="">All chips (${RAW_DATA.length})</option>`;
+            // Keep 'unknown' last; otherwise sort by descending count.
+            const chipKeys = Object.keys(cCounts).sort((a, b) => {
+                if (a === 'unknown') return 1;
+                if (b === 'unknown') return -1;
+                return cCounts[b] - cCounts[a];
+            });
+            chipKeys.forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c;
+                opt.textContent = `${c} (${cCounts[c]})`;
+                cSel.appendChild(opt);
+            });
+        }
+
         function renderModelSelect() {
             const sel = document.getElementById('model-select');
+            const prev = sel.value;
             sel.innerHTML = '<option value="">-- Select a model --</option>';
-            DATA.forEach(m => {
+            const filtered = DATA.filter(modelMatchesFilters);
+            filtered.forEach(m => {
                 const opt = document.createElement('option');
                 opt.value = m.original_index;
                 opt.textContent = m.id;
                 sel.appendChild(opt);
             });
+            // Surface filter result count alongside the source line.
+            const srcInfo = document.getElementById('data-source-info');
+            if (srcInfo && DATA_SOURCE_USED) {
+                const filterParts = [];
+                if (QUARTER_FILTER) filterParts.push(`quarter=${QUARTER_FILTER}`);
+                if (CHIP_FILTER) filterParts.push(`chip=${CHIP_FILTER}`);
+                const tail = filterParts.length
+                    ? ` — filtered to ${filtered.length}/${RAW_DATA.length} (${filterParts.join(', ')})`
+                    : ` — ${RAW_DATA.length} models`;
+                srcInfo.textContent = `Source: ${DATA_SOURCE_USED}${tail}`;
+            }
+            // Try to keep selection if still in filtered set.
+            if (prev && Array.from(sel.options).some(o => o.value === prev)) {
+                sel.value = prev;
+            }
         }
 
         document.getElementById('sort-select').addEventListener('change', function () {
@@ -90,6 +173,16 @@
             if (currentSelected !== '') {
                 document.getElementById('model-select').value = currentSelected;
             }
+        });
+
+        document.getElementById('quarter-filter').addEventListener('change', function () {
+            QUARTER_FILTER = this.value;
+            renderModelSelect();
+        });
+
+        document.getElementById('chip-filter').addEventListener('change', function () {
+            CHIP_FILTER = this.value;
+            renderModelSelect();
         });
 
         function setStatsMode(mode) {
@@ -170,6 +263,15 @@
                     'intel': '#26c6da',
                     'amd': '#ef5350',
                     'apple': '#9e9e9e',
+                    'aws': '#ff9800',
+                    'qualcomm': '#7e57c2',
+                    'huawei_ascend': '#e53935',
+                    'cambricon': '#ab47bc',
+                    'baidu_kunlun': '#29b6f6',
+                    'moore_threads': '#ec407a',
+                    'iluvatar': '#7e57c2',
+                    'hygon': '#26a69a',
+                    'metax': '#8e24aa',
                     'unknown': '#d0d0d0'
                 };
 
@@ -253,7 +355,9 @@
                         'amd': '#ef5350',
                         'apple': '#9e9e9e',
                         'aws': '#ff9800',
-                        'qualcomm': '#9c27b0',
+                        'qualcomm': '#7e57c2',
+                        'huawei_ascend': '#e53935',
+                        'cambricon': '#ab47bc',
                         'unknown': '#d0d0d0'
                     };
 
@@ -332,20 +436,71 @@
                     let lines = '';
                     let legendHTML = '';
                     const pointRadius = monthKeys.length > 24 ? 2.5 : 3.5;
+
+                    // Stack ordering for the area chart: largest provider at the
+                    // bottom (most stable visual band), 'unknown' at the top so
+                    // it doesn't dominate the eye.
+                    const totalsByProvider = {};
                     providerList.forEach(p => {
-                        const color = colors[p] || '#999';
-                        const points = series[p].map((v, i) => `${xFor(i)},${yFor(v)}`).join(' ');
-                        lines += `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
-                        series[p].forEach((v, i) => {
-                            const tip = metric === 'percent' ? v.toFixed(1) + '%' : v;
-                            const k = monthKeys[i];
-                            const m = k % 100;
-                            const y = Math.floor(k / 100);
-                            const monthLabel = `${MONTH_NAMES[m - 1]} ${y}`;
-                            lines += `<circle cx="${xFor(i)}" cy="${yFor(v)}" r="${pointRadius}" fill="${color}" stroke="#fff" stroke-width="1"><title>${p} ${monthLabel}: ${tip}</title></circle>`;
-                        });
-                        legendHTML += `<div style="display:flex; align-items:center; gap:6px;"><span style="display:inline-block; width:14px; height:14px; background:${color}; border-radius:3px;"></span> ${p}</div>`;
+                        totalsByProvider[p] = series[p].reduce((a, b) => a + b, 0);
                     });
+                    const stackOrder = [...providerList].sort((a, b) => {
+                        if (a === 'unknown') return 1;
+                        if (b === 'unknown') return -1;
+                        return totalsByProvider[b] - totalsByProvider[a];
+                    });
+
+                    if (metric === 'percent') {
+                        // Stacked 100% area chart: each provider's slice is
+                        // share-of-month. Bands sum to 100% per x.
+                        // y0[i] is the cumulative bottom for provider p at x=i.
+                        const y0 = new Array(monthKeys.length).fill(0);
+                        stackOrder.forEach(p => {
+                            const color = colors[p] || '#999';
+                            const top = series[p].map((v, i) => y0[i] + v);
+                            // SVG path: forward along the top edge, then back
+                            // along the bottom edge to close the polygon.
+                            const fwd = top.map((v, i) => `${xFor(i).toFixed(2)},${yFor(v).toFixed(2)}`).join(' ');
+                            const back = y0
+                                .map((v, i) => `${xFor(i).toFixed(2)},${yFor(v).toFixed(2)}`)
+                                .reverse()
+                                .join(' ');
+                            lines += `<polygon points="${fwd} ${back}" fill="${color}" fill-opacity="0.85" stroke="${color}" stroke-width="0.5"/>`;
+                            // Hover tooltips at each x: show this provider's share at the band's top.
+                            top.forEach((v, i) => {
+                                const k = monthKeys[i];
+                                const m = k % 100;
+                                const yr = Math.floor(k / 100);
+                                const monthLabel = `${MONTH_NAMES[m - 1]} ${yr}`;
+                                const share = series[p][i].toFixed(1);
+                                // Invisible hover circle on the top edge
+                                lines += `<circle cx="${xFor(i)}" cy="${yFor(v)}" r="${pointRadius + 1.5}" fill="${color}" fill-opacity="0" stroke="none"><title>${p} ${monthLabel}: ${share}%</title></circle>`;
+                            });
+                            for (let i = 0; i < monthKeys.length; i++) y0[i] = top[i];
+                        });
+                        // Legend in stack order so the top of the stack is the top of the legend.
+                        stackOrder.forEach(p => {
+                            const color = colors[p] || '#999';
+                            legendHTML += `<div style="display:flex; align-items:center; gap:6px;"><span style="display:inline-block; width:14px; height:14px; background:${color}; border-radius:3px;"></span> ${p}</div>`;
+                        });
+                    } else {
+                        // Count mode keeps the lines+points form (per-month
+                        // absolute counts don't add to a meaningful total, so
+                        // stacking is misleading).
+                        providerList.forEach(p => {
+                            const color = colors[p] || '#999';
+                            const points = series[p].map((v, i) => `${xFor(i)},${yFor(v)}`).join(' ');
+                            lines += `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+                            series[p].forEach((v, i) => {
+                                const k = monthKeys[i];
+                                const m = k % 100;
+                                const yr = Math.floor(k / 100);
+                                const monthLabel = `${MONTH_NAMES[m - 1]} ${yr}`;
+                                lines += `<circle cx="${xFor(i)}" cy="${yFor(v)}" r="${pointRadius}" fill="${color}" stroke="#fff" stroke-width="1"><title>${p} ${monthLabel}: ${v}</title></circle>`;
+                            });
+                            legendHTML += `<div style="display:flex; align-items:center; gap:6px;"><span style="display:inline-block; width:14px; height:14px; background:${color}; border-radius:3px;"></span> ${p}</div>`;
+                        });
+                    }
 
                     let totalsHTML = '<div style="margin-top:18px; display:flex; justify-content:center; gap:18px; font-size:11px; color:#888;">';
                     years.forEach(y => {
@@ -493,19 +648,69 @@
             `;
         }
 
-        fetch('https://huggingface.co/datasets/Franri/model-chips-data/resolve/main/results.json')
-            .then(r => r.json())
-            .then(data => {
-                RAW_DATA = data;
-                RAW_DATA.forEach((d, i) => d.original_index = i);
-                DATA = [...RAW_DATA];
-                applySort();
-                renderModelSelect();
-                document.getElementById('diagram').innerHTML = drawGlobalStats();
-            })
-            .catch(e => {
-                document.getElementById('diagram').innerHTML = '<p class="empty">Failed to load data from Hugging Face: ' + e.message + '</p>';
+        // Data sources, in order of preference:
+        //   1. ?src=<url>          — explicit override via query string
+        //   2. ../database/results.json   — the local pipeline output, when the
+        //      dashboard is served from the repo root (`python -m http.server`)
+        //   3. https://huggingface.co/datasets/Franri/model-chips-data/...  — the
+        //      published dataset, used when opening the file directly with no
+        //      server running
+        const DATA_SOURCES = (() => {
+            const params = new URLSearchParams(window.location.search);
+            const explicit = params.get('src');
+            const candidates = [];
+            if (explicit) candidates.push(explicit);
+            candidates.push('../database/results.json');
+            candidates.push('database/results.json');
+            candidates.push('https://huggingface.co/datasets/Franri/model-chips-data/resolve/main/results.json');
+            return candidates;
+        })();
+
+        function loadFromSources(sources, idx = 0) {
+            if (idx >= sources.length) {
+                document.getElementById('diagram').innerHTML =
+                    '<p class="empty">Failed to load results.json from any source. ' +
+                    'Drop a file into this page, or run `python -m http.server` ' +
+                    'from the repo root and open <code>/ui/dashboard.html</code>.</p>';
+                return;
+            }
+            const src = sources[idx];
+            fetch(src)
+                .then(r => { if (!r.ok) throw new Error(r.status + ' ' + r.statusText); return r.json(); })
+                .then(data => {
+                    DATA_SOURCE_USED = src;
+                    initData(data);
+                })
+                .catch(_ => loadFromSources(sources, idx + 1));
+        }
+
+        function initData(data) {
+            RAW_DATA = data;
+            RAW_DATA.forEach((d, i) => d.original_index = i);
+            DATA = [...RAW_DATA];
+            applySort();
+            populateFilterDropdowns();
+            renderModelSelect();
+            document.getElementById('diagram').innerHTML = drawGlobalStats();
+        }
+
+        // Drag-and-drop: drop a results.json onto the page to load it.
+        ['dragover','drop'].forEach(ev => document.addEventListener(ev, e => e.preventDefault()));
+        document.addEventListener('drop', e => {
+            const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+            if (!f) return;
+            f.text().then(t => {
+                try {
+                    DATA_SOURCE_USED = `(dropped: ${f.name})`;
+                    initData(JSON.parse(t));
+                } catch (err) {
+                    alert('Failed to parse JSON: ' + err.message);
+                }
             });
+        });
+
+        let DATA_SOURCE_USED = '';
+        loadFromSources(DATA_SOURCES);
 
         document.getElementById('model-select').addEventListener('change', function () {
             const hfBtn = document.getElementById('hf-button');

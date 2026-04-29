@@ -230,13 +230,9 @@ These files are treated as generated artifacts and are ignored by default.
 
 ## Evaluation
 
-Ground truth labels live in `tests/ground_truth.csv`.
-
-To annotate an existing `results.json` without rerunning the pipeline:
-
-```bash
-python scripts/add_ground_truth.py
-```
+Ground truth labels live in `tests/ground_truth.csv` and `tests/ground_truth_chinese.csv`.
+Scoring runs automatically as part of `main.py`; standalone scoring against an
+existing `results.json` is available via `python research/eval_score.py database/results.json`.
 
 Run the resolver regression tests:
 
@@ -252,8 +248,45 @@ Open `ui/dashboard.html` in a browser and drop in a `results.json` file to inspe
 
 Chip providers:
 
-`nvidia` · `amd` · `intel` · `google_tpu` · `apple` · `aws` · `qualcomm`
+`nvidia` · `amd` · `intel` · `google_tpu` · `apple` · `aws` · `qualcomm` ·
+`huawei_ascend` · `cambricon` · `baidu_kunlun` · `moore_threads` · `iluvatar` ·
+`hygon` · `metax`
 
 Frameworks:
 
-`pytorch` · `tensorflow` · `jax` · `paddlepaddle` · `mxnet` · `onnx`
+`pytorch` · `tensorflow` · `jax` · `paddlepaddle` · `mxnet` · `onnx` · `mindspore`
+
+Notes:
+- `huawei_ascend`: Ascend NPUs (910A/B/C, Atlas 200/800/900). Triggers on `ascend`,
+  `mindspore`, `cann`, `hccl`, `davinci`, `npu-smi`, `vllm-ascend`, `昇腾`.
+- `cambricon`: MLU 370/590. Triggers on `cambricon`, `cnnl`, `cndrv`, `bangpy`,
+  `MLUDevice`, `torch_mlu`.
+- `baidu_kunlun`: Kunlun XPU (P800, R200/R300). Triggers on `kunlun(xin)`, `xpurt`,
+  `paddle.set_device('xpu')`, `XPU_VISIBLE_DEVICES`, `昆仑芯`.
+- `moore_threads`: MTT S3000/S4000. Triggers on `musa`, `mthreads`, `torch_musa`,
+  `MUSA_VISIBLE_DEVICES`.
+- `iluvatar`: BI-V100/V150 (天数智芯). Triggers on `iluvatar`, `ixrt`, `corex`,
+  `BI-V100`.
+- `hygon`: Hygon DCU (K100/Z100). Triggers on `hygon`, `hy-smi`, `DTK`, `海光`.
+- `metax`: MetaX/Muxi C500/C550. Triggers on `metax`, `muxi`, `mxmaca`, `mx-smi`,
+  `沐曦`.
+- NVIDIA-China SKUs (H800, A800) remain `nvidia` — export-restricted variants of
+  H100/A100, not Chinese silicon.
+
+## Focused evaluation against a curated slice
+
+To evaluate against a specific list of model_ids (skipping the top-N popularity sample),
+pass an `--ids-file`:
+
+```bash
+python main.py --ids-file research/eval_ids.txt --workers 8
+python research/eval_score.py database/results.json
+```
+
+The scorer reports per-slice accuracy (correct / missed / false_positive / confused) using
+`tests/ground_truth.csv` and any `tests/ground_truth_*.csv` slice files. Diff two runs by
+passing both paths:
+
+```bash
+python research/eval_score.py database/results_baseline.json database/results.json
+```

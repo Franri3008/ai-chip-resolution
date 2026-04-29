@@ -12,33 +12,43 @@ from signals import snippet_is_training_disclosure, snippet_is_training_context 
 
 VALID_CHIPS = {
     "nvidia", "amd", "intel", "google_tpu", "apple", "aws", "qualcomm",
+    "huawei_ascend", "cambricon",
+    "baidu_kunlun", "moore_threads", "iluvatar", "hygon", "metax",
 }
 
-# Confidence mapping. Tuned for Gemma 4 E4B, which is well-calibrated enough that
-# `low` answers still carry real information when accompanied by a concrete quote.
 CONFIDENCE_MAP = {
     "high": 0.8,
     "medium": 0.6,
     "low": 0.4,
 }
 
-# A valid training-evidence quote must contain either a specific chip/accelerator
-# name OR an explicit training-language token. Weaker than "any chip literal" —
-# we want the LLM's conclusion to hinge on a concrete clue, not generic "GPU".
+# Quote validity: must contain a chip name or an explicit training-language token.
 _CHIP_OR_TRAINING_RE = re.compile(
-    r'\b(?:A100|H100|V100|H200|P100|T4|L40[Ss]?|A6000|A10[Gg]?|DGX|'
+    r'\b(?:A100|H100|H800|A800|V100|H200|P100|T4|L40[Ss]?|A6000|A10[Gg]?|DGX|'
     r'MI\d{3}[Xx]?|Instinct|Gaudi|Habana|Xeon|'
     r'TPU(?:\s*v\d+)?|Trainium|Inferentia|Neuron|'
     r'M[1-4](?:\s*(?:Pro|Max|Ultra))?|MLX|CoreML|OpenVINO|'
+    # Chinese accelerators
+    r'Ascend(?:\s*\d{3}[A-Da-d]?)?|910[ABCDabcd]|Atlas\s*\d{3}|MindSpore|CANN|HCCL|'
+    r'DaVinci|Cambricon|MLU\s*\d{3}|cnML|cnnl|BANGPy|'
+    r'Kunlun(?:xin)?|P800|R[23]00|XPU|昆仑|'
+    r'MUSA|MTT\s*S\d{3,4}|Moore[-_ ]?Threads|S4000|mthreads|'
+    r'Iluvatar|BI[-_ ]?V?1\d{2}|CoreX|天数智芯|'
+    r'Hygon|DCU|DTK|海光|MetaX|Muxi|MXMACA|沐曦|'
     r'trained\s+(?:on|using|with)|training\s+(?:hardware|infrastructure|utilized|cost[s]?|compute)|'
-    r'GPU\s+hours?|fine[- ]?tun(?:ed|ing)\s+(?:on|using|with)|'
+    r'GPU\s+hours?|NPU\s+hours?|fine[- ]?tun(?:ed|ing)\s+(?:on|using|with)|'
     r'pre[- ]?train(?:ed|ing)\s+(?:on|using|with)|compute\s+cluster|'
+    # Chinese disclosure phrasing common in TeleChat / Pangu cards
+    r'国产算力|完全基于国产|domestic\s+(?:chinese\s+)?computing|昇腾|'
     # Training-launcher patterns — distributed-training invocations are legit
     # training evidence even without a specific chip name. The LLM is instructed
-    # to map CUDA/torchrun -> nvidia, jax/xla -> tpu, rocm -> amd.
-    r'torchrun|CUDA_VISIBLE_DEVICES|DistributedDataParallel|nccl|accelerate\s+launch|'
-    r'deepspeed|mp\.spawn|--nproc[-_]?per[-_]?node|--num[-_]?gpus?|'
-    r'jax\.distributed|TPUStrategy|torch_xla|model\.cuda\(\)|torch\.cuda)\b',
+    # to map CUDA/torchrun -> nvidia, jax/xla -> tpu, rocm -> amd, mindspore/hccl -> ascend.
+    r'torchrun|CUDA_VISIBLE_DEVICES|ASCEND_RT_VISIBLE_DEVICES|DistributedDataParallel|nccl|hccl|'
+    r'accelerate\s+launch|deepspeed|mp\.spawn|--nproc[-_]?per[-_]?node|--num[-_]?gpus?|--num[-_]?npus?|'
+    r'jax\.distributed|TPUStrategy|torch_xla|model\.cuda\(\)|model\.npu\(\)|'
+    r'torch\.cuda|torch_npu|torch_mlu|mindspore\.set_context|'
+    r'XPU_VISIBLE_DEVICES|MUSA_VISIBLE_DEVICES|DCU_VISIBLE_DEVICES|METAX_VISIBLE_DEVICES|'
+    r'torch_musa|torch_dcu|xpurt|ixrt|mxmaca|paddle\.set_device)\b',
     re.IGNORECASE,
 )
 
@@ -101,9 +111,8 @@ def _build_prompt(model_name, yaml_library, framework, section_labeled_text,
     # a smaller slice. Training disclosures often live in github scripts (CUDA_VISIBLE_
     # _DEVICES, torchrun) or arXiv papers (H100 clusters), not in modelcards.
     card_text = section_labeled_text[:3500] if section_labeled_text else modelcard_excerpt[:2500]
-    # Only pass GitHub/arXiv snippets that already pass the strict co-location
-    # check — raw top-K snippets include `torch.cuda` runtime noise that Gemma
-    # reads as training evidence (e.g. regressed gpt-oss-20b).
+    # Pre-filter snippets through the strict co-location check; raw top-K
+    # snippets include runtime-only chip mentions that the LLM mis-reads.
     gh_filtered = _filter_disclosure_snippets(github_snippets)
     ax_filtered = _filter_disclosure_snippets(arxiv_snippets)
     gh_block = _format_snippets(gh_filtered, "EXTERNAL TRAINING DISCLOSURE (GITHUB)", 1500)
@@ -121,11 +130,13 @@ def _build_prompt(model_name, yaml_library, framework, section_labeled_text,
         f"COUNTS AS TRAINING EVIDENCE (commit to a chip):\n"
         f"- A sentence or table cell naming a specific accelerator AND training context: "
         f"\"trained on 8xA100\", \"H100 GPU hours\", \"TPU v4-128 pod\", \"MI250X cluster\", "
-        f"\"fine-tuned on H100\" — IF it refers to *this* model's own training.\n"
-        f"- A cost/compute table row labelled \"Training Cost\", \"GPU hours\", or "
-        f"\"Training Factors\" that names a chip (e.g. \"A100 80GB GPU hours | 1000\").\n"
-        f"- An explicit \"Hardware and Software\" / \"Training Infrastructure\" section "
-        f"that names a chip.\n"
+        f"\"fine-tuned on H100\", \"trained on Ascend NPU\", \"2048 Ascend 910 processors\", "
+        f"\"Atlas 800T A2 cluster\" — IF it refers to *this* model's own training.\n"
+        f"- A cost/compute table row labelled \"Training Cost\", \"GPU hours\", \"NPU hours\", or "
+        f"\"Training Factors\" that names a chip (e.g. \"A100 80GB GPU hours | 1000\", "
+        f"\"6K Ascend NPUs\").\n"
+        f"- An explicit \"Hardware and Software\" / \"Training Infrastructure\" / "
+        f"\"国产化适配\" / \"国产算力\" section that names a chip.\n"
         f"- Training-script infrastructure that implies the chip family:\n"
         f"    * `torchrun --nproc-per-node=N`, `CUDA_VISIBLE_DEVICES=0,1,…`, `deepspeed train.py`, "
         f"`accelerate launch`, `model.cuda()`, `torch.nn.parallel.DistributedDataParallel`, "
@@ -133,6 +144,29 @@ def _build_prompt(model_name, yaml_library, framework, section_labeled_text,
         f"    * `jax.distributed`, `flax`, `optax`, `torch_xla`, `TPUStrategy` — these are "
         f"Google TPU training and count as `google_tpu`.\n"
         f"    * `rocm`, `hipify`, `MI250`/`MI300` — AMD training → `amd`.\n"
+        f"    * `mindspore`, `mindspore.set_context(device_target='Ascend')`, `HCCL` backend, "
+        f"`ASCEND_RT_VISIBLE_DEVICES`, `torch_npu`, `npu-smi`, `model.npu()` — Huawei Ascend "
+        f"training → `huawei_ascend`. MindSpore is Huawei's framework and runs only on Ascend "
+        f"in production.\n"
+        f"    * `torch_mlu`, `cnnl`, `cndrv`, `BANGPy`, `MLUDevice`, `model.mlu()` — Cambricon "
+        f"training → `cambricon`.\n"
+        f"    * `paddle.set_device('xpu')`, `xpurt`, `XPU_VISIBLE_DEVICES`, `kunlunxin`, "
+        f"\"trained on Kunlun P800\" / \"昆仑芯\" — Baidu Kunlun training → `baidu_kunlun`. "
+        f"Note: bare `XPU` alone is ambiguous (Intel oneAPI also uses it); require "
+        f"Kunlun/Baidu/Paddle/P800 context.\n"
+        f"    * `torch_musa`, `MUSA_VISIBLE_DEVICES`, `mthreads`, `vllm-musa`, "
+        f"\"MTT S4000\" / \"Moore Threads\" — Moore Threads training → `moore_threads`.\n"
+        f"    * `ixrt`, `corex`, `Iluvatar`, \"BI-V100\" / \"BI-V150\" / \"天数智芯\" — "
+        f"Iluvatar training → `iluvatar`.\n"
+        f"    * `hy-smi`, `Hygon DCU`, `DTK`, `海光` (only when paired with DCU/DTK; bare "
+        f"`DCU` alone is too generic) — Hygon training → `hygon`.\n"
+        f"    * `mxmaca`, `mx-smi`, `METAX_VISIBLE_DEVICES`, `MetaX C500`, `Muxi`, "
+        f"`沐曦` — MetaX training → `metax`.\n"
+        f"  Phrases like \"完全基于国产算力训练\" / \"trained entirely on domestic Chinese computing "
+        f"power\" combined with a MindSpore/Ascend mention count as `huawei_ascend`. \"国产算力\" "
+        f"alone (no chip-vendor name) is ambiguous between Chinese vendors → return `unknown`.\n"
+        f"  Note: H800 and A800 are NVIDIA SKUs (export-restricted variants of H100/A100); they "
+        f"count as `nvidia`, even when used to train Chinese models.\n"
         f"  Only count launcher signals if they sit in this repo's training scripts, not in "
         f"a reference/optional inference snippet.\n\n"
         f"DOES NOT COUNT — return `unknown`:\n"
@@ -150,9 +184,23 @@ def _build_prompt(model_name, yaml_library, framework, section_labeled_text,
         f"- If any block contains a training-script import of `torch.distributed`, "
         f"`accelerate`, `deepspeed`, or a launcher (`torchrun`, `CUDA_VISIBLE_DEVICES`), "
         f"commit to `nvidia` at medium confidence — these frameworks run on NVIDIA "
-        f"CUDA in practice. Similarly `jax.distributed`/`torch_xla` → `google_tpu`.\n"
+        f"CUDA in practice. Similarly `jax.distributed`/`torch_xla` → `google_tpu`, "
+        f"`mindspore.set_context(device_target='Ascend')`/`HCCL`/`ASCEND_RT_VISIBLE_DEVICES` "
+        f"→ `huawei_ascend`, `torch_mlu`/`cnnl`/`MLUDevice` → `cambricon`, "
+        f"`paddle.set_device('xpu')`/`xpurt`/Kunlun-P800 → `baidu_kunlun`, "
+        f"`torch_musa`/MTT-S4000 → `moore_threads`, `ixrt`/CoreX/BI-V100 → `iluvatar`, "
+        f"Hygon-DCU/DTK/`hy-smi` → `hygon`, MXMACA/`mx-smi`/MetaX-C500 → `metax`.\n"
         f"- Never default to `nvidia` purely from the framework hint — you need an "
-        f"actual training-hardware or training-launcher signal.\n\n"
+        f"actual training-hardware or training-launcher signal.\n"
+        f"- A `mindspore` YAML library_name or a MindSpore reference inside a TRAINING "
+        f"section is a strong indicator of `huawei_ascend`. But a MindSpore link or "
+        f"`ms-swift`/`ModelScope` reference inside an inference / deployment section is "
+        f"NOT a training disclosure and should be ignored — return `unknown` if no "
+        f"training-context Ascend/MindSpore quote exists.\n"
+        f"- Do NOT promote to `huawei_ascend` based on the model being Chinese-authored "
+        f"alone. Many Chinese labs (Alibaba/Qwen, DeepSeek, ZhipuAI/GLM) train on NVIDIA "
+        f"H800/A800. Without a concrete Ascend / MindSpore / 国产算力 training quote, "
+        f"return `unknown` rather than guessing.\n\n"
         f"You may quote from the MODEL CARD or from any EXTERNAL TRAINING DISCLOSURE "
         f"block shown above. The external blocks have been pre-filtered to contain only "
         f"co-located training+hardware language, so if one names a specific chip, trust "

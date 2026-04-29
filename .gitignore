@@ -12,7 +12,15 @@ keys/*
 
 # Generated pipeline artifacts
 database/*.json
-database/models.csv
+database/*.csv
+database/snapshot_*/
+
+# Research run artifacts
+research/*.log
+research/__pycache__/
+research/full_run_ids.txt
+research/chinese_ascend_supplement_ids.txt
+research/NOTES.md
 
 # Local test artifacts
 tests/__pycache__/

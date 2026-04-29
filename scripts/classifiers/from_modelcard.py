@@ -10,6 +10,7 @@ from signals import (
     HARDWARE_SIGNALS, FRAMEWORK_SIGNALS,
     CHIP_PROVIDERS, FRAMEWORKS, MIN_SCORE_THRESHOLD, CONFIDENCE_DIVISOR,
     apply_training_disclosure_cap,
+    HARDWARE_DURATION_RE, EXPLICIT_TRAINING_DISCLOSURE_RE, HARDWARE_LITERAL_RE,
 )
 
 # ── Paths ─────────────────────────────────────────────────────────────
@@ -30,17 +31,21 @@ SECTION_WEIGHTS = {
     "table":            0.7,   # Benchmark / comparison tables
 }
 
-# Heading patterns → section type
+# Heading patterns → section type. Tolerates numbered prefixes like "### 6.7 …".
+_HEAD_PREFIX = r'#+\s*(?:\d+(?:\.\d+)*\.?\s+)?'
+
 _TRAINING_HEADINGS = re.compile(
-    r'#+\s*(?:training|hardware|infrastructure|compute|setup)',
+    _HEAD_PREFIX + r'(?:training|hardware|infrastructure|compute|setup|pre[- ]?training|fine[- ]?tuning)',
     re.IGNORECASE,
 )
 _COMPAT_HEADINGS = re.compile(
-    r'#+\s*(?:compatib|supported?\s+hardware|requirements?|installation|deploy|usage|how\s+to\s+(?:use|run))',
+    _HEAD_PREFIX + r'(?:compatib|supported?\s+hardware|requirements?|installation|deploy|usage|'
+    r'how\s+to\s+(?:use|run)|inference|recommended\s+inference|running|run\s+on|'
+    r'serving|local\s+(?:run|inference)|getting\s+started|quick\s*start)',
     re.IGNORECASE,
 )
 _REF_HEADINGS = re.compile(
-    r'#+\s*(?:citation|references?|acknowledg|bibtex|license|paper)',
+    _HEAD_PREFIX + r'(?:citation|references?|acknowledg|bibtex|license|paper)',
     re.IGNORECASE,
 )
 
@@ -70,12 +75,14 @@ _EXPORT_RE = re.compile(
 )
 
 _TRAINING_RE = re.compile(
-    r'(?:trained?\s+(?:on|with|using)|training\s+(?:on|with|hardware|infrastructure|setup|cluster)|'
+    r'(?:trained?\s+(?:on|with|using|from\s+scratch)|training\s+(?:on|with|hardware|infrastructure|setup|cluster)|'
     r'fine[- ]?tun(?:ed|ing)\s+(?:on|with|using)|pre[- ]?train(?:ed|ing)\s+(?:on|with)|'
-    r'(?:\d+\s*[x×]\s*)?(?:A100|H100|V100|TPU\s*v\d|P100|T4|MI\d{3}|Gaudi)\s*.*?(?:hours?|days?|weeks?)|'
+    r'(?:\d+\s*[x×]\s*)?(?:A100|A800|H100|H800|V100|TPU\s*v\d|P100|T4|MI\d{3}|Gaudi|'
+    r'Ascend(?:\s*\d{3}[A-Da-d]?)?|910[ABCDabcd]|Atlas\s*\d{3}|MLU\s*\d{3})\s*.*?(?:hours?|days?|weeks?|processors|chips|cores|cluster)|'
     r'compute\s+(?:budget|resources?|infrastructure)|'
     r'(?:hours?|days?|weeks?)\s+(?:of\s+)?(?:training|compute)|'
-    r'training\s+(?:was\s+)?(?:done|performed|conducted|run)\s+(?:on|using|with))',
+    r'training\s+(?:was\s+)?(?:done|performed|conducted|run)\s+(?:on|using|with)|'
+    r'国产算力|完全基于国产|domestic\s+(?:chinese\s+)?computing)',
     re.IGNORECASE,
 )
 
@@ -87,6 +94,23 @@ _INFERENCE_RUNTIME_LIBRARIES = {"mlx", "coreml", "openvino", "onnx"}
 _DERIVATIVE_NAME_RE = re.compile(
     r'(?:MLX|GGUF|ONNX|AWQ|GPTQ|EXL2|quantized|4bit|8bit|fp16|bf16|'
     r'CoreML|OpenVINO|INT[48]|Q[2-8]_[KM0-9])',
+    re.IGNORECASE,
+)
+
+# Fine-tune / upstream-derivative markers that appear in the card text itself.
+# When the title heading or an early body sentence describes this model as a
+# fine-tune of an upstream model, any linked arXiv paper is almost always for
+# the BASE model — its hardware disclosure does not apply to this checkpoint.
+_FINETUNE_TITLE_RE = re.compile(
+    r'^\s*#+\s*[^\n]*\bfine[- ]?tun(?:ed|ing)\b',
+    re.IGNORECASE | re.MULTILINE,
+)
+_FINETUNE_BODY_RE = re.compile(
+    # "fine-tuned from <hf-org>/<repo>" or "fine-tune of <hf-org>/<repo>"
+    r'\bfine[- ]?tun(?:ed|ing|e)\s+(?:from|of|version\s+of|on\s+top\s+of)\s+'
+    r'(?:\[?(?:google|facebook|microsoft|meta|huggingface|nvidia|stabilityai|laion|'
+    r'BAAI|sentence-transformers|FacebookAI|deepseek-ai|mistralai|01-ai|'
+    r'[\w-]+)/[\w./-]+\]?|the\s+\w+\s+model)',
     re.IGNORECASE,
 )
 
@@ -105,6 +129,8 @@ _YAML_LIBRARY_MAP = {
     "paddle": ("paddlepaddle", 8),
     "sentence-transformers": ("pytorch", 8),
     "onnx": ("onnx", 6),
+    "mindspore": ("mindspore", 8),
+    "mindformers": ("mindspore", 8),
     "mlx": ("pytorch", 3),       # inference runtime; MLX models are PyTorch conversions
     "coreml": ("pytorch", 3),    # inference runtime; CoreML models are PyTorch conversions
     "openvino": ("pytorch", 3),  # inference runtime; OpenVINO models are PyTorch conversions
@@ -117,6 +143,7 @@ _FRAMEWORK_CHIP_MAP = {
     "jax": "google_tpu",
     "paddlepaddle": "nvidia",
     "mxnet": "nvidia",
+    "mindspore": "huawei_ascend",
 }
 
 _YAML_TAG_KEYWORDS = {
@@ -129,6 +156,21 @@ _YAML_TAG_KEYWORDS = {
     "habana": ("intel", 6),
     "inferentia": ("aws", 6),
     "trainium": ("aws", 6),
+    "ascend": ("huawei_ascend", 6),
+    "mindspore": ("huawei_ascend", 5),
+    "cambricon": ("cambricon", 6),
+    "mlu": ("cambricon", 5),
+    "kunlun": ("baidu_kunlun", 6),
+    "kunlunxin": ("baidu_kunlun", 6),
+    "xpu": ("baidu_kunlun", 3),
+    "musa": ("moore_threads", 6),
+    "mthreads": ("moore_threads", 6),
+    "iluvatar": ("iluvatar", 6),
+    "corex": ("iluvatar", 5),
+    "hygon": ("hygon", 6),
+    "dcu": ("hygon", 5),
+    "metax": ("metax", 6),
+    "muxi": ("metax", 6),
     # Frameworks
     "pytorch": ("pytorch", 5),
     "tensorflow": ("tensorflow", 5),
@@ -151,8 +193,8 @@ def parse_yaml_frontmatter(text):
     return text[3:end], text[end + 4:]
 
 
-def detect_derivative(yaml_text, model_id):
-    """Detect if a model is a derivative (quantized/converted) model.
+def detect_derivative(yaml_text, model_id, body_text=""):
+    """Detect if a model is a derivative (quantized / converted / fine-tuned).
 
     Returns (is_derivative, base_model, runtime_library).
     """
@@ -180,7 +222,19 @@ def detect_derivative(yaml_text, model_id):
     # Check model name for derivative indicators
     name_is_derivative = bool(_DERIVATIVE_NAME_RE.search(model_id))
 
-    is_derivative = bool(runtime_library) or (name_is_derivative and base_model is not None)
+    # Card-text derivative indicators: a "Fine-Tuned …" title heading or an
+    # explicit "fine-tuned from <hf-org>/<repo>" body sentence both mark this
+    # as an upstream derivative — its linked arXiv paper is the BASE's paper,
+    # not this model's training disclosure.
+    finetune_titled = bool(body_text and _FINETUNE_TITLE_RE.search(body_text[:500]))
+    finetune_text = bool(body_text and _FINETUNE_BODY_RE.search(body_text))
+    finetune_derivative = finetune_titled or finetune_text
+
+    is_derivative = (
+        bool(runtime_library)
+        or (name_is_derivative and base_model is not None)
+        or finetune_derivative
+    )
 
     return is_derivative, base_model, runtime_library
 
@@ -260,14 +314,21 @@ def is_table_line(line):
     return stripped.startswith("|") and stripped.endswith("|")
 
 
-def check_context(text, match_start):
+def check_context(text, match_start, match_end=None):
     """Check the context around a match for negation/comparison/export/training.
 
-    Returns a multiplier: 0.0 (negated), 0.25 (export), 0.3 (comparative),
-    2.0 (training), 1.0 (normal).
+    Returns a multiplier:
+      0.0  negated
+      0.25 export / runtime-deploy
+      0.3  comparative
+      2.5  unambiguous training-disclosure (chip literal + duration phrase nearby)
+      1.5  training-context phrase nearby
+      1.0  normal
     """
     window_start = max(0, match_start - 80)
-    window_end = min(len(text), match_start + 80)
+    if match_end is None:
+        match_end = match_start
+    window_end = min(len(text), match_end + 80)
     preceding = text[window_start:match_start]
     context = text[window_start:window_end]
 
@@ -277,6 +338,12 @@ def check_context(text, match_start):
         return 0.3
     if _EXPORT_RE.search(preceding):
         return 0.25
+    # Strong: a chip literal sits inside an explicit duration disclosure
+    # ("2.788M H800 GPU hours", "2048 Ascend 910 processors trained for X").
+    # Use a wider window for this check — these phrases can run long.
+    wide = text[max(0, match_start - 160):min(len(text), match_end + 160)]
+    if HARDWARE_DURATION_RE.search(wide) and HARDWARE_LITERAL_RE.search(wide):
+        return 2.5
     if _TRAINING_RE.search(context):
         return 1.5
     return 1.0
@@ -316,7 +383,7 @@ def scan_section(text, section_type):
             for level, base_weight in [("strong", 5), ("medium", 3), ("weak", 1)]:
                 for pattern in signals.get(level, []):
                     for m in re.finditer(pattern, text, re.IGNORECASE):
-                        ctx_mult = check_context(text, m.start())
+                        ctx_mult = check_context(text, m.start(), m.end())
                         if ctx_mult == 0.0:
                             continue
                         tbl_weight = get_line_weight(m.start())
@@ -357,7 +424,7 @@ def analyze_modelcard(modelcard_text, model_id=""):
     chip_snippets = []
 
     # 0. Detect derivative/converted model
-    is_derivative, base_model, runtime_library = detect_derivative(yaml_text, model_id)
+    is_derivative, base_model, runtime_library = detect_derivative(yaml_text, model_id, body)
 
     # 1. YAML frontmatter structured signals
     yaml_scores, yaml_framework = extract_yaml_signals(yaml_text)
@@ -481,7 +548,7 @@ def _analyze_model(model):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workers", type=int, default=4,
+    parser.add_argument("--workers", type=int, default=16,
                         help="Parallel worker processes (default: 4)")
     args = parser.parse_args()
 

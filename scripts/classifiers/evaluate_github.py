@@ -250,7 +250,7 @@ def _score_model_heuristic(model):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--workers", type=int, default=4,
+    parser.add_argument("--workers", type=int, default=16,
                         help="Parallel workers for LLM fallback calls (default: 4)")
     parser.add_argument("--llm-concurrency", type=int, default=None,
                         help="Max concurrent in-flight LLM requests. Defaults to --workers.")

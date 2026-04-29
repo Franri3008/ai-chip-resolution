@@ -24,6 +24,7 @@ from signals import (  # noqa: E402
     apply_training_disclosure_cap,
     has_explicit_training_chip_evidence,
     launcher_implied_chip,
+    snippet_is_training_disclosure,
     TRAINING_DISCLOSURE_CAP,
 )
 from llm_client import (  # noqa: E402
@@ -45,6 +46,7 @@ FRAMEWORK_CHIP_MAP = {
     "jax": "google_tpu",
     "paddlepaddle": "nvidia",
     "mxnet": "nvidia",
+    "mindspore": "huawei_ascend",
 }
 
 # Broad upstream repos often expose framework/runtime support, but not the
@@ -81,6 +83,24 @@ _GT_PROVIDER_MAP = {
     "intel": "intel",
     "aws": "aws",
     "qualcomm": "qualcomm",
+    "huawei": "huawei_ascend",
+    "huawei_ascend": "huawei_ascend",
+    "ascend": "huawei_ascend",
+    "cambricon": "cambricon",
+    "baidu": "baidu_kunlun",
+    "baidu_kunlun": "baidu_kunlun",
+    "kunlun": "baidu_kunlun",
+    "kunlunxin": "baidu_kunlun",
+    "moore_threads": "moore_threads",
+    "moorethreads": "moore_threads",
+    "mthreads": "moore_threads",
+    "musa": "moore_threads",
+    "iluvatar": "iluvatar",
+    "corex": "iluvatar",
+    "hygon": "hygon",
+    "dcu": "hygon",
+    "metax": "metax",
+    "muxi": "metax",
     "unknown": "unknown",
 }
 
@@ -133,17 +153,30 @@ def check_tokens():
 
 
 def load_ground_truth():
-    """Load tests/ground_truth.csv and return {model_id: normalized_provider}."""
-    gt_path = Path(__file__).parent / "tests" / "ground_truth.csv"
-    if not gt_path.exists():
+    """Load ground-truth labels from tests/ground_truth.csv and any
+    tests/ground_truth_*.csv slice files.
+
+    Returns {model_id: normalized_provider}. Slice files (e.g.
+    ground_truth_chinese.csv) let us track per-cohort accuracy without
+    bloating the main CSV.
+    """
+    tests_dir = Path(__file__).parent / "tests"
+    if not tests_dir.exists():
         return {}
+    gt_files = []
+    main_csv = tests_dir / "ground_truth.csv"
+    if main_csv.exists():
+        gt_files.append(main_csv)
+    gt_files.extend(sorted(p for p in tests_dir.glob("ground_truth_*.csv")))
+
     gt = {}
-    with open(gt_path, encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            model_id = row["id"].strip()
-            provider = row["provider"].strip().lower()
-            gt[model_id] = _GT_PROVIDER_MAP.get(provider, provider)
+    for path in gt_files:
+        with open(path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                model_id = row["id"].strip()
+                provider = row["provider"].strip().lower()
+                gt[model_id] = _GT_PROVIDER_MAP.get(provider, provider)
     return gt
 
 
@@ -340,10 +373,12 @@ def resolve_initial_conclusion(mc, mca, gha, axa):
         ax_chip_conf = 0.0
         quality_blocked_chip = True
 
-    # Training-disclosure cap (safety net): if the scored snippets show no
-    # explicit training-disclosure phrasing, cap at 0.6 so LLM fallback runs.
-    # Classifiers also apply this, but re-applying here protects the aggregator
-    # from any classifier that forgets.
+    # Derivative models: linked arXiv paper describes the BASE, not this checkpoint.
+    if mca.get("is_derivative", False) and ax_chip != "unknown" and ax_chip_conf > 0:
+        ax_chip_conf = 0.0
+        quality_blocked_chip = True
+
+    # Training-disclosure cap: snippets without explicit training language cap at 0.6.
     if mc_chip != "unknown" and mc_chip_conf > 0:
         mc_chip_conf = round(apply_training_disclosure_cap(mc_chip_conf, mca.get("chip_snippets")), 2)
     if gh_chip != "unknown" and gh_chip_conf > 0:
@@ -456,19 +491,34 @@ def main():
 
     parser = argparse.ArgumentParser(description="Model hardware classifier pipeline")
     parser.add_argument("--top", type=int, default=None,
-                        help="When --years is set: top N models per MONTH within the year range "
-                             "(e.g. --top 50 --years 2022-2023 → up to 50 × 24 = 1200 models). "
+                        help="When --years/--quarters is set: top N models per BUCKET "
+                             "(month or quarter) within the range "
+                             "(e.g. --top 50 --quarters 2022-2026 → up to 50 × 20 = 1000 models). "
                              "Otherwise: total cap.")
     parser.add_argument("--years", type=str, default=None,
-                        help="Filter by model creation year(s): 2023 | 2022,2023 | 2022-2024")
+                        help="Filter by model creation year(s) with monthly buckets: "
+                             "2023 | 2022,2023 | 2022-2024")
+    parser.add_argument("--quarters", type=str, default=None,
+                        help="Like --years but with quarterly buckets (4 per year). "
+                             "Example: --quarters 2022-2026 --top 50")
+    parser.add_argument("--source-csv", type=str, default=None,
+                        help="Override source CSV (default: database/models.csv). "
+                             "Use database/models_dedup.csv to sample from family-deduplicated rows.")
     parser.add_argument("--update-models", action="store_true", default=False,
                         help="Re-fetch models.csv from HuggingFace (default: use existing)")
-    parser.add_argument("--workers", type=int, default=4,
-                        help="Parallel workers per classifier script (default: 4)")
-    parser.add_argument("--llm-concurrency", type=int, default=32,
-                        help="Max concurrent in-flight LLM requests (default: 32). "
+    parser.add_argument("--ids-file", type=str, default=None,
+                        help="Newline-separated file of model_ids to evaluate exactly. "
+                             "Skips top-N popularity sampling and the get_models.py step. "
+                             "Useful for focused eval against a curated ground-truth slice.")
+    parser.add_argument("--workers", type=int, default=16,
+                        help="Parallel workers per classifier script (default: 16). "
+                             "Most stages are network-bound (HF API, ar5iv HTML fetch, "
+                             "GitHub repo download) and scale well with concurrency.")
+    parser.add_argument("--llm-concurrency", type=int, default=64,
+                        help="Max concurrent in-flight LLM requests (default: 64). "
                              "Decoupled from --workers so the vLLM server can batch "
-                             "without being throttled by the classifier thread pool.")
+                             "without being throttled by the classifier thread pool. "
+                             "Tune against the vLLM server's --max-num-seqs.")
     parser.add_argument("--llm", action="store_true", default=False,
                         help="Enable LLM fallback for chip classification and candidate selection (default: disabled)")
     parser.add_argument("--provider", choices=list(VALID_PROVIDERS), default="OPENAI",
@@ -503,15 +553,36 @@ def main():
         )
 
     ingest_args = []
-    if args.top:
-        ingest_args += ["--top", str(args.top)]
-    if args.years:
-        ingest_args += ["--years", args.years]
+    if args.ids_file:
+        # Subprocesses run with cwd=scripts/ingest, so resolve to absolute first.
+        ids_abs = str(Path(args.ids_file).resolve())
+        if not Path(ids_abs).exists():
+            print(f"--ids-file not found: {args.ids_file}")
+            sys.exit(1)
+        ingest_args += ["--ids-file", ids_abs]
+    else:
+        if args.top:
+            ingest_args += ["--top", str(args.top)]
+        if args.years:
+            ingest_args += ["--years", args.years]
+        if args.quarters:
+            ingest_args += ["--quarters", args.quarters]
+        if args.source_csv:
+            csv_abs = str(Path(args.source_csv).resolve())
+            if not Path(csv_abs).exists():
+                print(f"--source-csv not found: {args.source_csv}")
+                sys.exit(1)
+            ingest_args += ["--source-csv", csv_abs]
     modelcard_args = ingest_args + ["--workers", str(args.workers)]
     worker_args = ["--workers", str(args.workers)]
     llm_concurrency_args = ["--llm-concurrency", str(args.llm_concurrency)]
 
-    if args.update_models:
+    if args.ids_file:
+        # Explicit-ID mode: skip the bulk models.csv fetch entirely.
+        if TRACKER:
+            TRACKER.start_stage("fetch_models", note=f"explicit ids: {args.ids_file}")
+            TRACKER.finish_stage("fetch_models", note="explicit ids")
+    elif args.update_models:
         run(INGEST / "get_models.py", viz_stage="fetch_models",
             viz_note="fetching from HuggingFace")
     elif TRACKER:
@@ -643,12 +714,6 @@ def build_results(llm_concurrency=32):
         base_model_id = mca.get("base_model")
         runtime_library = mca.get("runtime_library")
 
-        # Strong github training-launcher evidence short-circuits the LLM.
-        # If github_code training scripts (train.py, run_train.sh, etc.) contain
-        # a distributed-training launcher (torchrun / CUDA_VISIBLE_DEVICES /
-        # torch.distributed / jax.distributed / rocm), that's a high-precision
-        # chip-family signal. Gemma tends to refuse to commit on these, so we
-        # trust the heuristic and skip the LLM call entirely.
         gh_launcher_chip = launcher_implied_chip(gha.get("training_snippets") or [])
 
         needs_llm = False
@@ -657,9 +722,14 @@ def build_results(llm_concurrency=32):
         elif chip_conf < LLM_CHIP_CONFIDENCE_THRESHOLD:
             needs_llm = True
         elif chip != "unknown" and abs(chip_conf - TRAINING_DISCLOSURE_CAP) < 0.01:
-            # Confidence sits exactly at the disclosure cap → cap fired on this source.
-            # Defer to the LLM rather than committing to a runtime-only guess.
-            needs_llm = True
+            # Cap fired → defer to LLM, except for chips whose distinctive tokens
+            # (mindspore/cnnl/xpurt/musa/ixrt/hy-smi/mxmaca) rarely collide with
+            # runtime-noise vocabulary. Small LLMs over-correct these to unknown.
+            if chip in ("huawei_ascend", "cambricon", "baidu_kunlun",
+                        "moore_threads", "iluvatar", "hygon", "metax"):
+                needs_llm = False
+            else:
+                needs_llm = True
         elif chip != "unknown" and chip_conf < LLM_CHIP_CONFLICT_THRESHOLD:
             implied = FRAMEWORK_CHIP_MAP.get(fw)
             if implied and chip != implied:
@@ -669,14 +739,8 @@ def build_results(llm_concurrency=32):
         if is_derivative and needs_llm and base_model_id and base_model_id in mc_analysis:
             needs_llm = False
 
-        # Short-circuit: when the heuristic already picked this chip AND the
-        # github training scripts contain a distributed-training launcher (in
-        # a train*.py / scripts/*.sh), skip the LLM. The launcher is
-        # corroborating evidence for the heuristic, and Gemma tends to refuse
-        # to commit on launcher-only snippets (regresses those rows to unknown).
-        # We deliberately do NOT promote unknown → launcher-chip here: that
-        # would fire on library repos (FlagEmbedding/colbert/etc.) where the
-        # quality-block correctly zeroed the github signal.
+        # Heuristic + matching github launcher → skip LLM. Don't promote unknown
+        # → launcher-chip; library repos (FlagEmbedding etc.) get correctly zeroed.
         if (gh_launcher_chip and not is_derivative
                 and chip != "unknown" and chip == gh_launcher_chip):
             needs_llm = False
@@ -698,7 +762,13 @@ def build_results(llm_concurrency=32):
                     f"Determine the chip used to train the ORIGINAL model, not the conversion target."
                 )
 
-            gh_snips = (gha.get("chip_snippets") or []) + (gha.get("training_snippets") or [])
+            # Generic library repos (transformers etc.) leak polyglot backend
+            # strings — drop their snippets so the LLM doesn't commit on them.
+            selected_repo_for_llm = _normalize_github_repo(mc.get("main_github"))
+            if selected_repo_for_llm in LOW_TRUST_GITHUB_CHIP_REPOS:
+                gh_snips = []
+            else:
+                gh_snips = (gha.get("chip_snippets") or []) + (gha.get("training_snippets") or [])
             ax_snips = (axa.get("chip_snippets") or []) + (axa.get("training_snippets") or [])
             llm_queue.append((len(results), model_id, {
                 "model_name": model_id,
@@ -812,39 +882,157 @@ def build_results(llm_concurrency=32):
             final_chip = r["conclusion"]["chip_provider"]
             final_conf = r["conclusion"]["chip_provider_confidence"]
             final_src = r["conclusion"]["chip_provider_source"] or "unknown"
+            # CRITICAL: re-look-up the per-model analyses here. The earlier
+            # for-loop's `mc`/`mca`/`gha`/`axa` are stale by the time the LLM
+            # results come back, so reading them would mix evidence from a
+            # different model into our guard checks.
+            mc = modelcards.get(model_id, {})
+            mca = mc_analysis.get(model_id, {})
+            gha = gh_analysis.get(model_id, {})
+            axa = ax_analysis.get(model_id, {})
 
             if err:
                 print(f"  LLM chip failed for {model_id}: {err}")
             elif llm_chip:
-                r["conclusion"]["chip_provider"] = llm_chip
-                r["conclusion"]["chip_provider_confidence"] = llm_conf
-                r["conclusion"]["chip_provider_source"] = "llm_chip"
-                llm_chip_calls += 1
-                final_chip, final_conf, final_src = llm_chip, llm_conf, "llm_chip"
-                print(f"  LLM chip override for {model_id}: {llm_chip} (conf={llm_conf}, Cost: ${cost:.6f})")
+                # Trust-but-verify the LLM flip. Distinctive tokens stand alone;
+                # branded tokens (Ascend/MLU/DCU/XPU) need a training verb nearby.
+                _LLM_OVERRIDE_DISTINCTIVE = {
+                    "huawei_ascend": (
+                        r"\bmindspore\b|\bcann\b|\bhccl\b|\bdavinci\b|"
+                        r"vllm[-_]ascend|\bmindformers\b|\b昇腾\b|"
+                        r"\bnpu[-_]?smi\b|ASCEND_RT_VISIBLE_DEVICES"
+                    ),
+                    "cambricon": (
+                        r"\bcambricon\b|\bcnnl\b|\bcnml\b|\bbangpy\b|"
+                        r"\bMLUDevice\b|torch[-_]?mlu|\bcndrv\b"
+                    ),
+                    "baidu_kunlun": (
+                        r"\bkunlun(?:xin)?\b|\bxpurt\b|\b昆仑(?:芯|核)?\b|"
+                        r"paddle\.set_device\s*\(\s*[\"']xpu|"
+                        r"XPU_VISIBLE_DEVICES|paddlepaddle[-_]xpu"
+                    ),
+                    "moore_threads": (
+                        r"\btorch[-_]?musa\b|\bmthreads\b|\bmoore[-_ ]?threads\b|"
+                        r"\bmusatoolkit\b|\bmusart\b|\bmccl\b|MUSA_VISIBLE_DEVICES|"
+                        r"vllm[-_]musa|\bmtgpu\b"
+                    ),
+                    "iluvatar": (
+                        r"\biluvatar\b|\bixrt\b|\bcorex\b|\b天数智芯\b|\bixsmi\b"
+                    ),
+                    "hygon": (
+                        r"\bhygon\b|\b海光\b|hy[-_]?smi|hygon[-_]?dtk|"
+                        r"hygon[-_]?dcu|DCU_VISIBLE_DEVICES"
+                    ),
+                    "metax": (
+                        r"\bmetax\b|\bmuxi\b|\b沐曦\b|\bmxmaca\b|mx[-_]?smi|"
+                        r"METAX_VISIBLE_DEVICES"
+                    ),
+                }
+                _LLM_OVERRIDE_BRANDED = {
+                    "huawei_ascend": r"\bascend\b|\b910[ABCDabcd]\b|\bAtlas\s*\d{3}\b",
+                    "cambricon":     r"\bMLU\s*\d{3}\b",
+                    "baidu_kunlun":  r"\bP800\b|\bR[23]00\b|\bXPU\b",
+                    "moore_threads": r"\bMUSA\b|\bMTT\s*S\d{3,4}\b|\bS4000\b",
+                    "iluvatar":      r"\bBI[-_ ]?V?1\d{2}\b|\bMR[-_ ]?V?\d{3}\b",
+                    "hygon":         r"\bDCU\b|\bDTK\b|\b[KZ]100\b",
+                    "metax":         r"\bC[5-6]\d{2}\b",
+                }
+                _TRAINING_VERB_RE = re.compile(
+                    r"\btrain(?:ed|ing|s)?\b|\bpre[- ]?train(?:ed|ing)?\b|"
+                    r"\bfine[- ]?tun(?:ed|ing|e)?\b|\bGPU\s+hours?\b|\bNPU\s+hours?\b|"
+                    r"国产算力|完全基于国产|训练",
+                    re.IGNORECASE,
+                )
+                allow_override = True
+
+                # Reject LLM flips that have no training-disclosure language in
+                # any source the LLM saw — guards against runtime-mention pickups.
+                if llm_chip and llm_chip != "unknown" and llm_chip != final_chip:
+                    card_disc = snippet_is_training_disclosure(
+                        {"snippet": (mc.get("modelcard", "") or "")[:6000]}
+                    )
+                    gh_disc_any = any(
+                        snippet_is_training_disclosure(s)
+                        for s in (gha.get("chip_snippets") or [])
+                    )
+                    ax_disc_any = any(
+                        snippet_is_training_disclosure(s)
+                        for s in (axa.get("chip_snippets") or [])
+                    )
+                    if not (card_disc or gh_disc_any or ax_disc_any):
+                        allow_override = False
+                        print(f"  LLM chip override REJECTED (no training disclosure) "
+                              f"for {model_id}: {llm_chip} (was {final_chip}@{final_src})")
+
+                if allow_override and (llm_chip in _LLM_OVERRIDE_DISTINCTIVE and llm_chip != final_chip):
+                    # Verify against modelcard + filtered training snippets only;
+                    # raw github/arxiv text often lists multiple vendors as targets.
+                    card_text = mc.get("modelcard", "") or ""
+                    gh_disclosure_snippets = " ".join(
+                        s.get("snippet", "")
+                        for s in (gha.get("chip_snippets") or [])
+                        if snippet_is_training_disclosure(s)
+                    )
+                    ax_disclosure_snippets = " ".join(
+                        s.get("snippet", "")
+                        for s in (axa.get("chip_snippets") or [])
+                        if snippet_is_training_disclosure(s)
+                    )
+                    combined = card_text + " " + gh_disclosure_snippets + " " + ax_disclosure_snippets
+                    distinctive_hit = re.search(
+                        _LLM_OVERRIDE_DISTINCTIVE[llm_chip], combined, re.IGNORECASE,
+                    )
+                    branded_hit_with_training = False
+                    if not distinctive_hit:
+                        for m in re.finditer(
+                            _LLM_OVERRIDE_BRANDED[llm_chip], combined, re.IGNORECASE,
+                        ):
+                            window = combined[max(0, m.start() - 120):m.end() + 120]
+                            if _TRAINING_VERB_RE.search(window):
+                                branded_hit_with_training = True
+                                break
+                    if not (distinctive_hit or branded_hit_with_training):
+                        allow_override = False
+                        print(f"  LLM chip override REJECTED for {model_id}: {llm_chip} "
+                              f"has no distinctive token (or training-context branded "
+                              f"mention) in modelcard / disclosed snippets "
+                              f"(was {final_chip}@{final_src})")
+                if allow_override:
+                    r["conclusion"]["chip_provider"] = llm_chip
+                    r["conclusion"]["chip_provider_confidence"] = llm_conf
+                    r["conclusion"]["chip_provider_source"] = "llm_chip"
+                    llm_chip_calls += 1
+                    final_chip, final_conf, final_src = llm_chip, llm_conf, "llm_chip"
+                    print(f"  LLM chip override for {model_id}: {llm_chip} (conf={llm_conf}, Cost: ${cost:.6f})")
             else:
-                # LLM returned explicit "unknown" (no verdict committed). Only override
-                # the heuristic when it was a modelcard/runtime guess that couldn't be
-                # confirmed. Leave higher-confidence non-modelcard sources (explicit
-                # GitHub training code, arXiv training-section paper) alone — the LLM
-                # only saw the modelcard, so it lacked the evidence those sources had.
-                # Override to unknown when the heuristic hit is weak (<= cap). The LLM
-                # only read the modelcard, but low-confidence github/arXiv predictions
-                # are usually library-repo noise that correlates with an uninformative
-                # card — dropping them matches what the LLM would say with full context.
+                # LLM said unknown — override only weak heuristic hits. High-conf
+                # github/arXiv evidence stays (the LLM only read the modelcard).
                 safe_to_override = (
                     final_src == "modelcard"
                     or final_src == "unknown"
                     or final_src is None
                     or final_conf <= TRAINING_DISCLOSURE_CAP + 0.01
                 )
-                if final_chip != "unknown" and safe_to_override:
+                # Protect heuristic when modelcard already has explicit training
+                # disclosure for the same chip — LLM context window often truncates it.
+                mc_chip_snippets = [
+                    s for s in (mca.get("chip_snippets") or [])
+                    if s.get("provider") == final_chip
+                ]
+                modelcard_has_disclosure_for_chip = (
+                    final_src == "modelcard"
+                    and has_explicit_training_chip_evidence(mc_chip_snippets)
+                )
+                if final_chip != "unknown" and safe_to_override and not modelcard_has_disclosure_for_chip:
                     prev_chip, prev_src = final_chip, final_src
                     r["conclusion"]["chip_provider"] = "unknown"
                     r["conclusion"]["chip_provider_confidence"] = 0.0
                     r["conclusion"]["chip_provider_source"] = None
                     final_chip, final_conf, final_src = "unknown", 0.0, None
                     print(f"  LLM confirmed unknown for {model_id} (was {prev_chip}@{prev_src})")
+                elif final_chip != "unknown" and modelcard_has_disclosure_for_chip:
+                    print(f"  LLM said unknown for {model_id} but modelcard has explicit "
+                          f"{final_chip} training disclosure — keeping heuristic answer")
 
             if TRACKER:
                 TRACKER.record_llm_chip(model_id, final_chip, final_conf, cost)
