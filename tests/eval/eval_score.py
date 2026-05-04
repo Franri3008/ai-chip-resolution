@@ -12,8 +12,8 @@ chinese_slice_nvidia_control / etc.). A model present in multiple CSVs is bucket
 by the *last* slice that mentions it, so curated overrides win.
 
 Usage:
-    python research/eval_score.py [results.json]                # default: database/results.json
-    python research/eval_score.py results_baseline.json results_after.json  # diff mode
+    python tests/eval/eval_score.py [results.json]                # default: database/results.json
+    python tests/eval/eval_score.py results_baseline.json results_after.json  # diff mode
 """
 
 import csv
@@ -22,7 +22,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 TESTS = ROOT / "tests"
 
 _GT_PROVIDER_MAP = {

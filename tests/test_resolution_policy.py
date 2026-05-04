@@ -12,8 +12,6 @@ def _unknown_analysis():
         "chip_provider": "unknown",
         "chip_provider_confidence": 0.0,
         "chip_snippets": [],
-        "framework": "unknown",
-        "framework_confidence": 0.0,
         "matched_sections": [],
         "detection_files": [],
     }
@@ -31,8 +29,6 @@ def test_low_trust_github_repo_is_ignored_for_chip():
             "chip_snippets": [
                 {"snippet": "...Generate training data... torch.cuda.empty_cache()...", "file": "research/train_utils.py"},
             ],
-            "framework": "pytorch",
-            "framework_confidence": 1.0,
             "detection_files": ["research/train_utils.py"],
         }
         axa = _unknown_analysis()
@@ -54,8 +50,6 @@ def test_runtime_only_arxiv_benchmark_is_ignored():
         "chip_snippets": [
             {"snippet": "...average query latency ... one Tesla V100 GPU per query for neural re-rankers...", "section": "body"},
         ],
-        "framework": "unknown",
-        "framework_confidence": 0.0,
     }
 
     resolved = resolve_initial_conclusion(mc, mca, gha, axa)
@@ -73,8 +67,6 @@ def test_explicit_training_paper_evidence_is_kept():
         "chip_snippets": [
             {"snippet": "...the model was trained on 8 V100 GPUs for approximately 90 hours...", "section": "body"},
         ],
-        "framework": "unknown",
-        "framework_confidence": 0.0,
     }
 
     resolved = resolve_initial_conclusion(mc, mca, gha, axa)
@@ -91,8 +83,6 @@ def test_low_conf_modelcard_runtime_usage_is_ignored():
         "chip_snippets": [
             {"snippet": "...pipeline.to(torch.device(\"cuda\"))..."},
         ],
-        "framework": "pytorch",
-        "framework_confidence": 0.4,
         "matched_sections": ["body"],
     }
     gha = _unknown_analysis()
@@ -115,8 +105,6 @@ def test_explicit_modelcard_ascend_training_is_kept():
         "chip_snippets": [
             {"snippet": "...trained entirely on domestic Chinese computing power... MindSpore... Ascend Atlas 800T A2..."},
         ],
-        "framework": "mindspore",
-        "framework_confidence": 0.7,
         "matched_sections": ["training", "body"],
     }
     gha = {
@@ -125,8 +113,6 @@ def test_explicit_modelcard_ascend_training_is_kept():
         "chip_snippets": [
             {"snippet": "...import torch ... model.cuda() ..."},
         ],
-        "framework": "pytorch",
-        "framework_confidence": 0.7,
         "detection_files": ["inference/run.py"],
     }
     axa = _unknown_analysis()
@@ -147,8 +133,6 @@ def test_explicit_modelcard_training_tpu_is_kept():
         "chip_snippets": [
             {"snippet": "...We trained our model on a TPU v3-8 during 100k steps..."},
         ],
-        "framework": "pytorch",
-        "framework_confidence": 0.85,
         "matched_sections": ["training"],
     }
     gha = _unknown_analysis()
@@ -168,8 +152,6 @@ def test_thin_margin_does_not_flip_to_arxiv():
         "chip_snippets": [
             {"snippet": "...we trained our model on a TPU v4-8 for 200k steps..."},
         ],
-        "framework": "unknown",
-        "framework_confidence": 0.0,
         "matched_sections": ["training"],
     }
     gha = _unknown_analysis()
@@ -179,8 +161,6 @@ def test_thin_margin_does_not_flip_to_arxiv():
         "chip_snippets": [
             {"snippet": "...we trained on 8 A100 GPUs for 100 hours..."},
         ],
-        "framework": "unknown",
-        "framework_confidence": 0.0,
     }
 
     resolved = resolve_initial_conclusion(mc, mca, gha, axa)
@@ -202,8 +182,6 @@ def test_source_conflict_lowers_confidence():
         "chip_snippets": [
             {"snippet": "...we trained on TPU v4 pods for 300k steps..."},
         ],
-        "framework": "unknown",
-        "framework_confidence": 0.0,
         "matched_sections": ["training"],
     }
     gha = {
@@ -212,8 +190,6 @@ def test_source_conflict_lowers_confidence():
         "chip_snippets": [
             {"snippet": "...we trained on 8 A100 GPUs for 100 hours..."},
         ],
-        "framework": "unknown",
-        "framework_confidence": 0.0,
         "detection_files": ["scripts/train.py"],
     }
     axa = _unknown_analysis()
@@ -237,8 +213,6 @@ def test_low_floor_arxiv_still_returned_via_fallback():
         "chip_snippets": [
             {"snippet": "...we trained on 4 V100 GPUs for approximately 20 hours..."},
         ],
-        "framework": "unknown",
-        "framework_confidence": 0.0,
     }
 
     resolved = resolve_initial_conclusion(mc, mca, gha, axa)
@@ -259,8 +233,6 @@ def test_training_disclosure_cap_limits_heuristic_confidence():
         "chip_snippets": [
             {"snippet": "...model supports CUDA acceleration via TensorRT backend..."},
         ],
-        "framework": "pytorch",
-        "framework_confidence": 0.9,
         "matched_sections": ["body"],
     }
     gha = _unknown_analysis()
@@ -445,8 +417,6 @@ def test_capped_confidence_routes_to_llm_trigger():
         "chip_snippets": [
             {"snippet": "...fit into a single 80GB GPU (like NVIDIA H100 or AMD MI300X)..."},
         ],
-        "framework": "pytorch",
-        "framework_confidence": 0.9,
         "matched_sections": ["body"],
     }
     gha = _unknown_analysis()

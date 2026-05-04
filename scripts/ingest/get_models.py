@@ -2,16 +2,17 @@ import csv
 import json
 import logging
 import os
+import sys
 import time
 
 from huggingface_hub import HfApi
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _keys import hf_token  # noqa: E402
+
 logging.disable(logging.WARNING)
 
-token_path = os.path.join(os.path.dirname(__file__), "..", "..", "keys", ".hf_token")
-with open(token_path) as f:
-    hf_token = f.read().strip()
-api = HfApi(token=hf_token)
+api = HfApi(token=hf_token())
 
 start = time.time()
 

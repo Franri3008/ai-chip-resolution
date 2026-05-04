@@ -293,103 +293,7 @@ HARDWARE_SIGNALS = {
 }
 
 
-FRAMEWORK_SIGNALS = {
-    "pytorch": {
-        "strong": [
-            r'\bimport torch\b',
-            r'\bfrom torch\b',
-            r'\btorch\.nn\b',
-            r'\btorch\.optim\b',
-            r'\bpytorch\b',
-            r'\btorch\.Tensor\b',
-            r'\btorch\.utils\b',
-        ],
-        "medium": [
-            r'\btorchvision\b',
-            r'\btorchaudio\b',
-            r'\btorch\.distributed\b',
-        ],
-        "weak": [],
-    },
-    "tensorflow": {
-        "strong": [
-            r'\bimport tensorflow\b',
-            r'\bfrom tensorflow\b',
-            r'\btf\.keras\b',
-            r'\btensorflow\b',
-            r'\btf\.data\b',
-            r'\btf\.train\b',
-        ],
-        "medium": [
-            r'\bkeras\b',
-            r'\btf\.distribute\b',
-        ],
-        "weak": [],
-    },
-    "jax": {
-        "strong": [
-            r'\bimport jax\b',
-            r'\bfrom jax\b',
-            r'\bjax\.numpy\b',
-            r'\bjaxlib\b',
-        ],
-        "medium": [
-            r'\bflax\b',
-            r'\boptax\b',
-        ],
-        "weak": [],
-    },
-    "paddlepaddle": {
-        "strong": [
-            r'\bimport paddle\b',
-            r'\bfrom paddle\b',
-            r'\bpaddlepaddle\b',
-            r'\bpaddle\.nn\b',
-        ],
-        "medium": [
-            r'\bpaddlenlp\b',
-        ],
-        "weak": [],
-    },
-    "mxnet": {
-        "strong": [
-            r'\bimport mxnet\b',
-            r'\bfrom mxnet\b',
-        ],
-        "medium": [
-            r'\bgluon(?!ts)\b(?!.*pytorch)',
-        ],
-        "weak": [],
-    },
-    "onnx": {
-        "strong": [
-            r'\bonnxruntime\b',
-            r'\bimport onnx\b',
-            r'\bfrom onnx\b',
-            r'\bonnx_model\b',
-        ],
-        "medium": [
-            r'\b\.onnx\b',
-            r'\bonnx\b',
-        ],
-        "weak": [],
-    },
-    "mindspore": {
-        # Huawei framework — production checkpoints originate from Ascend.
-        "strong": [
-            r'\bimport mindspore\b',
-            r'\bfrom mindspore\b',
-            r'\bmindspore\b',
-            r'\bmindformers\b',
-        ],
-        "medium": [],
-        "weak": [],
-    },
-}
-
-
 DEPENDENCY_SIGNALS = {
-    # Chip providers
     "nvidia": ["cupy", "nvidia-apex", "flash-attn", "triton", "tensorrt",
                "pynvml", "nvidia-ml-py", "cutlass"],
     "amd": ["torch-rocm", "rocm"],
@@ -408,19 +312,9 @@ DEPENDENCY_SIGNALS = {
     "iluvatar": ["ixrt", "iluvatar-corex"],
     "hygon": ["hygon-dtk", "torch-dcu"],
     "metax": ["mxmaca", "torch-metax"],
-    # Frameworks
-    "pytorch": ["torch", "torchvision", "torchaudio", "pytorch-lightning",
-                "lightning"],
-    "tensorflow": ["tensorflow", "tensorflow-gpu", "tf-nightly", "keras"],
-    "jax": ["jax", "jaxlib"],
-    "paddlepaddle": ["paddlepaddle", "paddlepaddle-gpu", "paddlenlp"],
-    "mxnet": ["mxnet-cu", "mxnet==", "mxnet>", "mxnet<"],
-    "onnx": ["onnxruntime", "onnxruntime-gpu", "onnx"],
-    "mindspore": ["mindspore", "mindformers"],
 }
 
 CHIP_PROVIDERS = set(HARDWARE_SIGNALS.keys())
-FRAMEWORKS = set(FRAMEWORK_SIGNALS.keys())
 
 MIN_SCORE_THRESHOLD = 6
 CONFIDENCE_DIVISOR = 30

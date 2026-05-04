@@ -102,7 +102,7 @@ def _format_snippets(snippets, label, max_chars):
     return f"\n=== {label} ===\n" + "\n".join(lines)
 
 
-def _build_prompt(model_name, yaml_library, framework, section_labeled_text,
+def _build_prompt(model_name, yaml_library, section_labeled_text,
                   modelcard_excerpt, extra_context,
                   github_snippets=None, arxiv_snippets=None):
     # vLLM's 4096-token context means the full prompt must stay under ~12000 chars
@@ -122,7 +122,6 @@ def _build_prompt(model_name, yaml_library, framework, section_labeled_text,
         f'(not the hardware a user runs it on).\n\n'
         f"Known facts:\n"
         f"- YAML library_name: {yaml_library or 'not specified'}\n"
-        f"- Heuristic-detected framework: {framework or 'unknown'}\n"
         f"{extra_context}\n\n"
         f"=== MODEL CARD ===\n{card_text}"
         f"{gh_block}"
@@ -323,7 +322,6 @@ def _parse_answer(answer, card_text=""):
 async def ask_llm_chip(
     model_name,
     yaml_library=None,
-    framework=None,
     modelcard_excerpt="",
     section_labeled_text="",
     extra_context="",
@@ -338,7 +336,7 @@ async def ask_llm_chip(
     Returns (chip_provider_str_or_None, confidence_float, cost_float).
     """
     prompt = _build_prompt(
-        model_name, yaml_library, framework,
+        model_name, yaml_library,
         section_labeled_text, modelcard_excerpt, extra_context,
         github_snippets=github_snippets, arxiv_snippets=arxiv_snippets,
     )

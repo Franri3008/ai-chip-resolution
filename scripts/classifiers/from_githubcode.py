@@ -4,27 +4,26 @@ import functools
 import json
 import os
 import re
+import sys
 import time
 import requests
 from tqdm import tqdm
 
 from signals import (
-    HARDWARE_SIGNALS, FRAMEWORK_SIGNALS, DEPENDENCY_SIGNALS,
-    CHIP_PROVIDERS, FRAMEWORKS, MIN_SCORE_THRESHOLD, CONFIDENCE_DIVISOR,
+    HARDWARE_SIGNALS, DEPENDENCY_SIGNALS,
+    CHIP_PROVIDERS, MIN_SCORE_THRESHOLD, CONFIDENCE_DIVISOR,
     apply_training_disclosure_cap, extract_training_snippets,
 )
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _keys import gh_token  # noqa: E402
 
 # ── Paths ─────────────────────────────────────────────────────────────
 
 data_path = os.path.join(os.path.dirname(__file__), "..", "..", "database", "modelcards.json")
 output_path = os.path.join(os.path.dirname(__file__), "..", "..", "database", "github_chip_analysis.json")
 
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-if not GITHUB_TOKEN:
-    token_path = os.path.join(os.path.dirname(__file__), "..", "..", "keys", ".gh_token")
-    if os.path.exists(token_path):
-        with open(token_path) as f:
-            GITHUB_TOKEN = f.read().strip()
+GITHUB_TOKEN = gh_token()
 
 HEADERS = {"Accept": "application/vnd.github.v3+json"}
 if GITHUB_TOKEN:
@@ -134,19 +133,16 @@ _TRAINING_RE = re.compile(
 # model-specific training signals. Apply repo priors so the repo's primary
 # training stack beats export/runtime mentions.
 REPO_PRIORS = {
-    "amazon-science/chronos-forecasting": {"framework": "pytorch", "chip": "nvidia"},
-    "facebookresearch/convnext-v2": {"framework": "pytorch", "chip": "nvidia"},
-    "huggingface/pytorch-image-models": {"framework": "pytorch", "chip": "nvidia"},
-    "huggingface/transformers": {"framework": "pytorch", "chip": "nvidia"},
-    "ukplab/sentence-transformers": {"framework": "pytorch", "chip": "nvidia"},
-    "ultralytics/ultralytics": {"framework": "pytorch", "chip": "nvidia"},
-    # Additional library repos: host many models, export/optimization code overwhelms training signals
-    "pytorch/fairseq": {"framework": "pytorch", "chip": "nvidia"},       # xlm-roberta, wav2vec2
-    "openai/clip": {"framework": "pytorch", "chip": "nvidia"},            # openai/clip-vit-*
-    "openai/gpt-2": {"framework": "pytorch"},                             # openai-community/gpt2
-    "stanford-futuredata/colbert": {"framework": "pytorch"},              # colbert-ir/colbertv2.0
-    "baaivision/flagembedding": {"framework": "pytorch", "chip": "nvidia"},  # BAAI/bge-*
-    "flagopen/flagembedding": {"framework": "pytorch", "chip": "nvidia"},
+    "amazon-science/chronos-forecasting": {"chip": "nvidia"},
+    "facebookresearch/convnext-v2": {"chip": "nvidia"},
+    "huggingface/pytorch-image-models": {"chip": "nvidia"},
+    "huggingface/transformers": {"chip": "nvidia"},
+    "ukplab/sentence-transformers": {"chip": "nvidia"},
+    "ultralytics/ultralytics": {"chip": "nvidia"},
+    "pytorch/fairseq": {"chip": "nvidia"},
+    "openai/clip": {"chip": "nvidia"},
+    "baaivision/flagembedding": {"chip": "nvidia"},
+    "flagopen/flagembedding": {"chip": "nvidia"},
 }
 
 # ── GitHub API helpers ───────────────────────────────────────────────
@@ -247,44 +243,33 @@ def _check_context(content, match_start):
 
 
 def scan_content(content, filename):
-    """Scan file content against all hardware + framework signal patterns."""
+    """Scan file content against hardware signal patterns."""
     scores = {}
     is_dep_file = bool(IS_DEP_FILE_RE.search(filename))
     purpose_mult = get_file_purpose_mult(filename)
-    # Cap per-pattern matches to avoid runaway counts from repeated mentions
     max_matches_per_pattern = 5
     explicit_snippets = []
 
-    all_signals = [
-        (HARDWARE_SIGNALS, "hardware"),
-        (FRAMEWORK_SIGNALS, "framework"),
-    ]
+    for provider, signals in HARDWARE_SIGNALS.items():
+        for level, weight in [("strong", 5), ("medium", 3), ("weak", 1)]:
+            for pattern in signals.get(level, []):
+                count = 0
+                for m in re.finditer(pattern, content, re.IGNORECASE):
+                    if count >= max_matches_per_pattern:
+                        break
+                    ctx_mult = _check_context(content, m.start()) if not is_dep_file else 1.0
+                    scores[provider] = scores.get(provider, 0) + weight * ctx_mult * purpose_mult
+                    count += 1
 
-    for signal_dict, signal_type in all_signals:
-        for provider, signals in signal_dict.items():
-            for level, weight in [("strong", 5), ("medium", 3), ("weak", 1)]:
-                for pattern in signals.get(level, []):
-                    count = 0
-                    for m in re.finditer(pattern, content, re.IGNORECASE):
-                        if count >= max_matches_per_pattern:
-                            break
-                        # Apply context multiplier for all non-dependency files
-                        ctx_mult = _check_context(content, m.start()) if not is_dep_file else 1.0
-                        # Apply file purpose multiplier (training 1.5x, docs 0.5x, runtime 0.3x)
-                        scores[provider] = scores.get(provider, 0) + weight * ctx_mult * purpose_mult
-                        count += 1
+                    start = max(0, m.start() - 100)
+                    end = min(len(content), m.end() + 100)
+                    snippet = content[start:end].replace("\n", " ").strip()
+                    explicit_snippets.append({
+                        "provider": provider,
+                        "snippet": f"...{snippet}...",
+                        "file": filename
+                    })
 
-                        if signal_type == "hardware":
-                            start = max(0, m.start() - 100)
-                            end = min(len(content), m.end() + 100)
-                            snippet = content[start:end].replace("\n", " ").strip()
-                            explicit_snippets.append({
-                                "provider": provider,
-                                "snippet": f"...{snippet}...",
-                                "file": filename
-                            })
-
-    # Dependency bonus in requirements/setup files
     if is_dep_file:
         content_lower = content.lower()
         for key, deps in DEPENDENCY_SIGNALS.items():
@@ -295,47 +280,20 @@ def scan_content(content, filename):
     return scores, explicit_snippets
 
 
-def apply_repo_priors(chip_scores, fw_scores, owner_repo):
-    """Bias known library repos toward their primary training stack."""
-    prior = REPO_PRIORS.get(owner_repo.lower())
-    if not prior:
-        return chip_scores, fw_scores
-
-    chip_scores = dict(chip_scores)
-    fw_scores = dict(fw_scores)
-
-    prior_fw = prior.get("framework")
-    if prior_fw:
-        base = fw_scores.get(prior_fw, 0)
-        cap = max(base * 2, 10)
-        for fw_name in list(fw_scores):
-            if fw_name != prior_fw:
-                fw_scores[fw_name] = min(fw_scores[fw_name], cap)
-        fw_scores[prior_fw] = max(fw_scores.get(prior_fw, 0), cap + 1)
-
-    # We NO LONGER cap competing chip providers based on repo priors.
-    # We want explicit hardware signals to natively overpower the prior.
-
-    return chip_scores, fw_scores
-
-
 # ── Repo analysis ────────────────────────────────────────────────────
 
 def analyze_repo(owner, repo):
-    """Analyze a GitHub repo for chip provider and framework signals."""
+    """Analyze a GitHub repo for chip-provider signals."""
     all_paths = get_repo_tree(owner, repo)
     if all_paths is None:
         return {
             "chip_provider": "unknown", "chip_provider_score": 0,
             "chip_provider_confidence": 0.0, "chip_providers_all": {},
-            "framework": "unknown", "framework_score": 0,
-            "framework_confidence": 0.0, "frameworks_all": {},
             "detection_files": [], "error": "tree_fetch_failed",
         }
 
     tier1, tier2, file_presence_scores = classify_files(all_paths)
 
-    # Start with file-presence scores
     total_scores = {}
     for provider, count in file_presence_scores.items():
         total_scores[provider] = total_scores.get(provider, 0) + count * 4
@@ -345,16 +303,12 @@ def analyze_repo(owner, repo):
     training_snippets = []
 
     def _accumulate_training(content, path):
-        # Training-disclosure sentences that don't sit near a chip literal
-        # (chip_snippets catches those). These are for the LLM to read —
-        # e.g. a README saying "trained on 16 nodes of our internal cluster".
         if not content:
             return
         per_file_budget = 2 if _DOCS_FILE_RE.search(path) else 3
         new = extract_training_snippets(content, source=path, max_snippets=per_file_budget)
         training_snippets.extend(new)
 
-    # Fetch and scan Tier 1 files
     for path in tier1:
         content = get_file_content(owner, repo, path)
         if content:
@@ -366,7 +320,6 @@ def analyze_repo(owner, repo):
             chip_snippets.extend(snips)
             _accumulate_training(content, path)
 
-    # If top chip score < threshold, also scan Tier 2 (no penalty — purpose multipliers handle weighting)
     chip_scores = {k: v for k, v in total_scores.items() if k in CHIP_PROVIDERS}
     top_chip = max(chip_scores.values()) if chip_scores else 0
     if top_chip < MIN_SCORE_THRESHOLD:
@@ -381,13 +334,9 @@ def analyze_repo(owner, repo):
                 chip_snippets.extend(snips)
                 _accumulate_training(content, path)
 
-    # Split scores into chips and frameworks
     chip_scores = {k: v for k, v in total_scores.items() if k in CHIP_PROVIDERS and v > 0}
-    fw_scores = {k: v for k, v in total_scores.items() if k in FRAMEWORKS and v > 0}
     owner_repo = f"{owner}/{repo}"
-    chip_scores, fw_scores = apply_repo_priors(chip_scores, fw_scores, owner_repo)
 
-    # Determine top chip provider
     sorted_chips = sorted(chip_scores.items(), key=lambda x: -x[1])
     if sorted_chips and sorted_chips[0][1] >= MIN_SCORE_THRESHOLD:
         top_chip_name, top_chip_sc = sorted_chips[0]
@@ -404,15 +353,6 @@ def analyze_repo(owner, repo):
     if top_chip_name != "unknown":
         chip_conf = apply_training_disclosure_cap(chip_conf, chip_snippets)
 
-    # Determine top framework
-    sorted_fw = sorted(fw_scores.items(), key=lambda x: -x[1])
-    if sorted_fw and sorted_fw[0][1] >= MIN_SCORE_THRESHOLD:
-        top_fw_name, top_fw_sc = sorted_fw[0]
-        fw_conf = min(1.0, round(top_fw_sc / CONFIDENCE_DIVISOR, 2))
-    else:
-        top_fw_name, top_fw_sc, fw_conf = "unknown", 0, 0.0
-
-    # Cap training_snippets globally to keep the LLM prompt bounded.
     training_snippets = training_snippets[:10]
 
     return {
@@ -420,10 +360,6 @@ def analyze_repo(owner, repo):
         "chip_provider_score": top_chip_sc,
         "chip_provider_confidence": chip_conf,
         "chip_providers_all": dict(sorted_chips),
-        "framework": top_fw_name,
-        "framework_score": top_fw_sc,
-        "framework_confidence": fw_conf,
-        "frameworks_all": dict(sorted_fw),
         "detection_files": detection_files,
         "chip_snippets": chip_snippets,
         "training_snippets": training_snippets,
@@ -442,8 +378,6 @@ def _analyze_model(model):
             "id": model_id, "github_url": None,
             "chip_provider": "unknown", "chip_provider_score": 0,
             "chip_provider_confidence": 0.0, "chip_providers_all": {},
-            "framework": "unknown", "framework_score": 0,
-            "framework_confidence": 0.0, "frameworks_all": {},
             "detection_files": [],
         }
 
@@ -453,8 +387,6 @@ def _analyze_model(model):
             "id": model_id, "github_url": github_url,
             "chip_provider": "unknown", "chip_provider_score": 0,
             "chip_provider_confidence": 0.0, "chip_providers_all": {},
-            "framework": "unknown", "framework_score": 0,
-            "framework_confidence": 0.0, "frameworks_all": {},
             "detection_files": [], "error": "unparseable_url",
         }
 
@@ -484,17 +416,14 @@ def main():
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 
-    # Summary
     print(f"\nResults saved to {output_path}")
-    print(f"{'Model':50s} {'Chip':12s} {'Conf':6s} {'Framework':12s} {'Conf':6s}  All chips")
-    print("-" * 120)
+    print(f"{'Model':50s} {'Chip':12s} {'Conf':6s}  All chips")
+    print("-" * 100)
     for r in results:
         chip = r.get("chip_provider", "unknown")
         chip_conf = r.get("chip_provider_confidence", 0)
-        fw = r.get("framework", "unknown")
-        fw_conf = r.get("framework_confidence", 0)
         all_chips = r.get("chip_providers_all", {})
-        print(f"  {r['id']:48s} {chip:12s} {chip_conf:<6.2f} {fw:12s} {fw_conf:<6.2f}  {all_chips}")
+        print(f"  {r['id']:48s} {chip:12s} {chip_conf:<6.2f}  {all_chips}")
 
 
 if __name__ == "__main__":

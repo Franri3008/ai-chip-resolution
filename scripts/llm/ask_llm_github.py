@@ -1,17 +1,16 @@
 import argparse
 import os
 import re
+import sys
 
 import requests
 
 from llm_client import complete_async
 
-_GH_TOKEN = ""
-_gh_token_path = os.path.join(os.path.dirname(__file__), "..", "..", "keys", ".gh_token")
-if os.path.exists(_gh_token_path):
-    with open(_gh_token_path) as f:
-        _GH_TOKEN = f.read().strip()
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _keys import gh_token  # noqa: E402
 
+_GH_TOKEN = gh_token()
 _GH_HEADERS = {"Accept": "application/vnd.github.v3+json"}
 if _GH_TOKEN:
     _GH_HEADERS["Authorization"] = f"token {_GH_TOKEN}"

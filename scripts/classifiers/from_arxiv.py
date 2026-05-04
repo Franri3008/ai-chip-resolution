@@ -1,7 +1,7 @@
-"""Classify chip provider and framework from arXiv paper HTML (via ar5iv).
+"""Classify chip provider from arXiv paper HTML (via ar5iv).
 
 Fetches the HTML rendering of each model's selected arXiv paper, parses
-sections by heading, and scores hardware/framework signals with section-aware
+sections by heading, and scores hardware signals with section-aware
 weighting.
 """
 
@@ -14,8 +14,8 @@ import urllib.request
 from tqdm import tqdm
 
 from signals import (
-    HARDWARE_SIGNALS, FRAMEWORK_SIGNALS,
-    CHIP_PROVIDERS, FRAMEWORKS, MIN_SCORE_THRESHOLD, CONFIDENCE_DIVISOR,
+    HARDWARE_SIGNALS,
+    CHIP_PROVIDERS, MIN_SCORE_THRESHOLD, CONFIDENCE_DIVISOR,
     apply_training_disclosure_cap, extract_training_snippets,
 )
 
@@ -163,40 +163,34 @@ def _check_context(text, match_start):
 
 
 def scan_section(text, section_type):
-    """Scan section text for hardware/framework signals.
-
-    Returns (scores_dict, chip_snippets_list).
-    """
+    """Scan section text for hardware signals. Returns (scores, chip_snippets)."""
     scores = {}
     snippets = []
     section_weight = _SECTION_WEIGHTS.get(section_type, 0.8)
     max_matches_per_pattern = 5
 
-    for signal_dict, signal_kind in [(HARDWARE_SIGNALS, "hardware"), (FRAMEWORK_SIGNALS, "framework")]:
-        for provider, signals in signal_dict.items():
-            for level, weight in [("strong", 5), ("medium", 3), ("weak", 1)]:
-                for pattern in signals.get(level, []):
-                    # Skip file_presence patterns — not relevant for papers
-                    if level == "file_presence":
-                        continue
-                    count = 0
-                    for m in re.finditer(pattern, text, re.IGNORECASE):
-                        if count >= max_matches_per_pattern:
-                            break
-                        ctx_mult = _check_context(text, m.start())
-                        total_weight = weight * ctx_mult * section_weight
-                        scores[provider] = scores.get(provider, 0) + total_weight
-                        count += 1
+    for provider, signals in HARDWARE_SIGNALS.items():
+        for level, weight in [("strong", 5), ("medium", 3), ("weak", 1)]:
+            for pattern in signals.get(level, []):
+                if level == "file_presence":
+                    continue
+                count = 0
+                for m in re.finditer(pattern, text, re.IGNORECASE):
+                    if count >= max_matches_per_pattern:
+                        break
+                    ctx_mult = _check_context(text, m.start())
+                    total_weight = weight * ctx_mult * section_weight
+                    scores[provider] = scores.get(provider, 0) + total_weight
+                    count += 1
 
-                        if signal_kind == "hardware":
-                            start = max(0, m.start() - 150)
-                            end = min(len(text), m.end() + 150)
-                            snippet = text[start:end].strip()
-                            snippets.append({
-                                "provider": provider,
-                                "snippet": f"...{snippet}...",
-                                "section": section_type,
-                            })
+                    start = max(0, m.start() - 150)
+                    end = min(len(text), m.end() + 150)
+                    snippet = text[start:end].strip()
+                    snippets.append({
+                        "provider": provider,
+                        "snippet": f"...{snippet}...",
+                        "section": section_type,
+                    })
 
     return scores, snippets
 
@@ -227,17 +221,12 @@ def _extract_arxiv_id(url):
 
 
 def analyze_paper(arxiv_id):
-    """Analyze a single arXiv paper for chip/framework signals.
-
-    Returns a result dict with chip_provider, framework, confidence, etc.
-    """
+    """Analyze a single arXiv paper for chip-provider signals."""
     html = fetch_paper_html(arxiv_id)
     if not html:
         return {
             "chip_provider": "unknown", "chip_provider_score": 0,
             "chip_provider_confidence": 0.0, "chip_providers_all": {},
-            "framework": "unknown", "framework_score": 0,
-            "framework_confidence": 0.0, "frameworks_all": {},
             "detection_sections": [], "chip_snippets": [],
             "error": "fetch_failed",
         }
@@ -255,18 +244,13 @@ def analyze_paper(arxiv_id):
         if scores and section_type not in detection_sections:
             detection_sections.append(section_type)
         all_snippets.extend(snippets)
-        # Also surface training-phrase sentences (even without a chip literal
-        # nearby) for the LLM — papers often disclose "trained on N nodes of …".
         if section_type in ("training", "method", "abstract"):
             training_snippets.extend(extract_training_snippets(
                 section_text, source=section_type, max_snippets=3,
             ))
 
-    # Split into chips and frameworks
     chip_scores = {k: round(v, 1) for k, v in total_scores.items() if k in CHIP_PROVIDERS and v > 0}
-    fw_scores = {k: round(v, 1) for k, v in total_scores.items() if k in FRAMEWORKS and v > 0}
 
-    # Determine top chip
     sorted_chips = sorted(chip_scores.items(), key=lambda x: -x[1])
     if sorted_chips and sorted_chips[0][1] >= MIN_SCORE_THRESHOLD:
         top_chip_name, top_chip_sc = sorted_chips[0]
@@ -275,25 +259,13 @@ def analyze_paper(arxiv_id):
     else:
         top_chip_name, top_chip_sc, chip_conf = "unknown", 0, 0.0
 
-    # Determine top framework
-    sorted_fw = sorted(fw_scores.items(), key=lambda x: -x[1])
-    if sorted_fw and sorted_fw[0][1] >= MIN_SCORE_THRESHOLD:
-        top_fw_name, top_fw_sc = sorted_fw[0]
-        fw_conf = min(1.0, round(top_fw_sc / CONFIDENCE_DIVISOR, 2))
-    else:
-        top_fw_name, top_fw_sc, fw_conf = "unknown", 0, 0.0
-
     return {
         "chip_provider": top_chip_name,
         "chip_provider_score": top_chip_sc,
         "chip_provider_confidence": chip_conf,
         "chip_providers_all": dict(sorted_chips),
-        "framework": top_fw_name,
-        "framework_score": top_fw_sc,
-        "framework_confidence": fw_conf,
-        "frameworks_all": dict(sorted_fw),
         "detection_sections": detection_sections,
-        "chip_snippets": all_snippets[:20],  # Cap snippets
+        "chip_snippets": all_snippets[:20],
         "training_snippets": training_snippets[:8],
     }
 
@@ -310,8 +282,6 @@ def _analyze_model(model):
             "id": model_id, "arxiv_url": None,
             "chip_provider": "unknown", "chip_provider_score": 0,
             "chip_provider_confidence": 0.0, "chip_providers_all": {},
-            "framework": "unknown", "framework_score": 0,
-            "framework_confidence": 0.0, "frameworks_all": {},
             "detection_sections": [], "chip_snippets": [],
         }
 
@@ -321,8 +291,6 @@ def _analyze_model(model):
             "id": model_id, "arxiv_url": arxiv_url,
             "chip_provider": "unknown", "chip_provider_score": 0,
             "chip_provider_confidence": 0.0, "chip_providers_all": {},
-            "framework": "unknown", "framework_score": 0,
-            "framework_confidence": 0.0, "frameworks_all": {},
             "detection_sections": [], "chip_snippets": [],
             "error": "unparseable_url",
         }
@@ -356,11 +324,9 @@ def main():
     for r in results:
         chip = r.get("chip_provider", "unknown")
         chip_conf = r.get("chip_provider_confidence", 0)
-        fw = r.get("framework", "unknown")
-        fw_conf = r.get("framework_confidence", 0)
         all_chips = r.get("chip_providers_all", {})
         if r.get("arxiv_url"):
-            print(f"  {r['id']:48s} {chip:12s} {chip_conf:<6.2f} {fw:12s} {fw_conf:<6.2f}  {all_chips}")
+            print(f"  {r['id']:48s} {chip:12s} {chip_conf:<6.2f}  {all_chips}")
 
 
 if __name__ == "__main__":

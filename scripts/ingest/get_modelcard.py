@@ -15,10 +15,10 @@ from tqdm import tqdm
 
 hf_logging.set_verbosity_error();
 
-token_path = os.path.join(os.path.dirname(__file__), "..", "..", "keys", ".hf_token")
-with open(token_path) as f:
-    hf_token = f.read().strip();
-login(token=hf_token);
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from _keys import hf_token  # noqa: E402
+
+login(token=hf_token());
 
 def _parse_years(years_str: str) -> set:
     """Parse a years string into a set of ints.

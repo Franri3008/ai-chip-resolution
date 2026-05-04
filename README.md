@@ -1,6 +1,6 @@
 # Model Hardware Classifier
 
-This project maps Hugging Face models to their likely training hardware provider and ML framework by combining evidence from model cards, GitHub repositories, and arXiv papers.
+This project maps Hugging Face models to their likely training hardware provider by combining evidence from model cards, GitHub repositories, and arXiv papers.
 
 The pipeline is evidence-driven by design:
 - Prefer explicit training disclosures over runtime or deployment mentions.
@@ -201,12 +201,13 @@ python -m http.server 8080 &   # serve current dir
 2. `scripts/ingest/get_modelcard.py`
 3. `scripts/ingest/get_github.py`
 4. `scripts/ingest/get_arxiv.py`
-5. `scripts/classifiers/evaluate_github.py`
-6. `scripts/classifiers/evaluate_arxiv.py`
-7. `scripts/classifiers/from_modelcard.py`
-8. `scripts/classifiers/from_githubcode.py`
-9. `scripts/classifiers/from_arxiv.py`
-10. `main.py` result aggregation and optional evaluation
+5. `scripts/ingest/get_collections.py`
+6. `scripts/classifiers/evaluate_github.py`
+7. `scripts/classifiers/evaluate_arxiv.py`
+8. `scripts/classifiers/from_modelcard.py`
+9. `scripts/classifiers/from_githubcode.py`
+10. `scripts/classifiers/from_arxiv.py`
+11. `main.py` result aggregation and optional evaluation
 
 ## Repository Layout
 
@@ -214,25 +215,43 @@ python -m http.server 8080 &   # serve current dir
 - `scripts/ingest/`: data collection from external sources
 - `scripts/classifiers/`: heuristic source scoring and classification
 - `scripts/llm/`: LLM-assisted fallback logic
+- `scripts/_keys.py`: shared HF / GitHub token loader
+- `scripts/run_monthly_and_top10k.sh`: two-pass sweep (top 50/month + top 10k all-time) with snapshotting into `database/runs/`
 - `tests/`: regression tests and ground-truth labels
+- `tests/eval/`: standalone scorer + curated eval slice
 - `ui/dashboard.html`: local result inspection UI
+- `Makefile`: top-level entry points (`setup`, `run`, `sweep`, `score`, `dashboard`, `test`, `clean`)
+
+## Make targets
+
+```bash
+make setup                              # bash setup.sh
+make run ARGS="--top 100 --workers 8"   # python main.py with custom args
+make sweep                              # run_monthly_and_top10k.sh
+make score RESULTS=path/to/results.json # score against tests/ground_truth*.csv
+make dashboard                          # serve ui/dashboard.html on :8080
+make test                               # pytest
+make clean                              # rm pycache + .pytest_cache
+```
 
 ## Outputs
 
-Generated artifacts are written to `database/` during a run:
+Generated artifacts are written to `database/` during a run, then archived
+into `database/runs/` by `run_monthly_and_top10k.sh`:
 
 - `results.json`: final classifications plus trace metadata
 - `modelcard_chip_analysis.json`: model-card scoring output
 - `github_chip_analysis.json`: GitHub code scoring output
 - `arxiv_chip_analysis.json`: paper scoring output
 
-These files are treated as generated artifacts and are ignored by default.
+All `database/*.json`, `database/runs/`, and `logs/` are treated as generated
+artifacts and are gitignored.
 
 ## Evaluation
 
 Ground truth labels live in `tests/ground_truth.csv` and `tests/ground_truth_chinese.csv`.
 Scoring runs automatically as part of `main.py`; standalone scoring against an
-existing `results.json` is available via `python research/eval_score.py database/results.json`.
+existing `results.json` is available via `python tests/eval/eval_score.py database/results.json`.
 
 Run the resolver regression tests:
 
@@ -251,10 +270,6 @@ Chip providers:
 `nvidia` · `amd` · `intel` · `google_tpu` · `apple` · `aws` · `qualcomm` ·
 `huawei_ascend` · `cambricon` · `baidu_kunlun` · `moore_threads` · `iluvatar` ·
 `hygon` · `metax`
-
-Frameworks:
-
-`pytorch` · `tensorflow` · `jax` · `paddlepaddle` · `mxnet` · `onnx` · `mindspore`
 
 Notes:
 - `huawei_ascend`: Ascend NPUs (910A/B/C, Atlas 200/800/900). Triggers on `ascend`,
@@ -279,8 +294,8 @@ To evaluate against a specific list of model_ids (skipping the top-N popularity 
 pass an `--ids-file`:
 
 ```bash
-python main.py --ids-file research/eval_ids.txt --workers 8
-python research/eval_score.py database/results.json
+python main.py --ids-file tests/eval/eval_ids.txt --workers 8
+python tests/eval/eval_score.py database/results.json
 ```
 
 The scorer reports per-slice accuracy (correct / missed / false_positive / confused) using
@@ -288,5 +303,5 @@ The scorer reports per-slice accuracy (correct / missed / false_positive / confu
 passing both paths:
 
 ```bash
-python research/eval_score.py database/results_baseline.json database/results.json
+python tests/eval/eval_score.py database/results_baseline.json database/results.json
 ```

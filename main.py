@@ -6,7 +6,6 @@ import re
 import subprocess
 import sys
 import threading
-import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -15,11 +14,9 @@ SCRIPTS = Path(__file__).parent / "scripts"
 INGEST = SCRIPTS / "ingest"
 LLM = SCRIPTS / "llm"
 CLASSIFIERS = SCRIPTS / "classifiers"
-VIZ = SCRIPTS / "viz"
 
 sys.path.insert(0, str(CLASSIFIERS))
 sys.path.insert(0, str(LLM))
-sys.path.insert(0, str(VIZ))
 from signals import (  # noqa: E402
     apply_training_disclosure_cap,
     has_explicit_training_chip_evidence,
@@ -35,19 +32,7 @@ from llm_client import (  # noqa: E402
     VALID_PROVIDERS,
 )
 
-TRACKER = None  # Set by main() when --viz is passed
-
 LLM_CHIP_CONFIDENCE_THRESHOLD = 0.5
-LLM_CHIP_CONFLICT_THRESHOLD = 0.7  # Skip conflict-check LLM when chip confidence is already high
-
-FRAMEWORK_CHIP_MAP = {
-    "pytorch": "nvidia",
-    "tensorflow": "nvidia",
-    "jax": "google_tpu",
-    "paddlepaddle": "nvidia",
-    "mxnet": "nvidia",
-    "mindspore": "huawei_ascend",
-}
 
 # Broad upstream repos often expose framework/runtime support, but not the
 # training hardware for a specific checkpoint.
@@ -228,24 +213,18 @@ def evaluate_ground_truth(results, ground_truth):
             print(f"    {model_id:48s}  expected={expected:12s}  got={predicted:12s}  (via {src or '?'})")
 
 
-def run(script, cwd=None, extra_args=None, viz_stage=None, viz_note=""):
+def run(script, cwd=None, extra_args=None):
     cmd = [sys.executable, str(script)] + (extra_args or [])
     print(f"\n{'='*60}")
     print(f"Running: {script.name}")
     print(f"{'='*60}")
-    if TRACKER and viz_stage:
-        TRACKER.start_stage(viz_stage, note=viz_note)
     result = subprocess.run(cmd, cwd=str(cwd or script.parent))
     if result.returncode != 0:
-        if TRACKER and viz_stage:
-            TRACKER.finish_stage(viz_stage, note=f"exit {result.returncode}", errored=True)
         print(f"\nFailed: {script.name} (exit {result.returncode})")
         sys.exit(result.returncode)
-    if TRACKER and viz_stage:
-        TRACKER.finish_stage(viz_stage)
 
 
-def run_parallel(scripts, extra_args=None, viz_stage=None, viz_note=""):
+def run_parallel(scripts, extra_args=None):
     """Launch multiple scripts in parallel and wait for all to finish.
 
     Output from each script is buffered and printed as a block when the
@@ -256,21 +235,11 @@ def run_parallel(scripts, extra_args=None, viz_stage=None, viz_note=""):
     results = {}  # script → (returncode, output)
     lock = threading.Lock()
 
-    if TRACKER and viz_stage:
-        TRACKER.start_stage(viz_stage, note=viz_note)
-
     def _run_one(script):
         cmd = [sys.executable, str(script)] + extra_args
         proc = subprocess.run(cmd, capture_output=True, text=True)
         with lock:
             results[script] = proc
-            if TRACKER and viz_stage:
-                done = len(results)
-                TRACKER.update_stage(
-                    viz_stage,
-                    completed=done,
-                    current=script.name,
-                )
 
     threads = [threading.Thread(target=_run_one, args=(s,)) for s in scripts]
     for t in threads:
@@ -292,12 +261,8 @@ def run_parallel(scripts, extra_args=None, viz_stage=None, viz_note=""):
             failed = (script.name, proc.returncode)
 
     if failed:
-        if TRACKER and viz_stage:
-            TRACKER.finish_stage(viz_stage, note=f"{failed[0]} exit {failed[1]}", errored=True)
         print(f"\nFailed: {failed[0]} (exit {failed[1]})")
         sys.exit(failed[1])
-    if TRACKER and viz_stage:
-        TRACKER.finish_stage(viz_stage)
 
 
 def _normalize_github_repo(url):
@@ -328,7 +293,7 @@ def _is_runtime_only_chip_evidence(snippets):
 
 
 def resolve_initial_conclusion(mc, mca, gha, axa):
-    """Resolve chip/framework before optional LLM fallback."""
+    """Resolve chip provider before optional LLM fallback."""
     mc_chip = mca.get("chip_provider", "unknown")
     gh_chip = gha.get("chip_provider", "unknown")
     ax_chip = axa.get("chip_provider", "unknown")
@@ -336,9 +301,6 @@ def resolve_initial_conclusion(mc, mca, gha, axa):
     mc_chip_conf = round(mca.get("chip_provider_confidence", 0.0), 2)
     gh_chip_conf = round(gha.get("chip_provider_confidence", 0.0), 2)
     ax_chip_conf = round(axa.get("chip_provider_confidence", 0.0), 2)
-    mc_fw_conf = round(mca.get("framework_confidence", 0.0), 2)
-    gh_fw_conf = round(gha.get("framework_confidence", 0.0), 2)
-    ax_fw_conf = round(axa.get("framework_confidence", 0.0), 2)
 
     quality_blocked_chip = False
 
@@ -432,63 +394,16 @@ def resolve_initial_conclusion(mc, mca, gha, axa):
         if chip_conflict:
             chip_conf = min(chip_conf, CONFLICT_CONF_CAP)
 
-    mc_fw = mca.get("framework", "unknown")
-    gh_fw = gha.get("framework", "unknown")
-    ax_fw = axa.get("framework", "unknown")
-
-    if (
-        ax_fw != "unknown"
-        and ax_fw_conf >= MIN_PREFER_ARXIV
-        and ax_fw_conf - max(gh_fw_conf, mc_fw_conf) >= MIN_MARGIN
-    ):
-        fw, fw_conf, fw_src = ax_fw, ax_fw_conf, "arxiv_paper"
-    elif (
-        gh_fw != "unknown"
-        and gh_fw_conf >= MIN_PREFER_GITHUB
-        and gh_fw_conf - mc_fw_conf >= MIN_MARGIN
-    ):
-        fw, fw_conf, fw_src = gh_fw, gh_fw_conf, "github_code"
-    elif mc_fw != "unknown":
-        fw, fw_conf, fw_src = mc_fw, mc_fw_conf, "modelcard"
-    elif gh_fw != "unknown":
-        fw, fw_conf, fw_src = gh_fw, gh_fw_conf, "github_code"
-    elif ax_fw != "unknown":
-        fw, fw_conf, fw_src = ax_fw, ax_fw_conf, "arxiv_paper"
-    else:
-        fw, fw_conf, fw_src = "unknown", 0.0, None
-
-    fw_conflict = False
-    if fw != "unknown":
-        for other_fw, other_conf in (
-            (mc_fw, mc_fw_conf),
-            (gh_fw, gh_fw_conf),
-            (ax_fw, ax_fw_conf),
-        ):
-            if (
-                other_fw != "unknown"
-                and other_fw != fw
-                and other_conf >= CONFLICT_DISAGREE_MIN
-            ):
-                fw_conflict = True
-                break
-        if fw_conflict:
-            fw_conf = min(fw_conf, CONFLICT_CONF_CAP)
-
     return {
         "chip_provider": chip,
         "chip_provider_confidence": chip_conf,
         "chip_provider_source": chip_src,
-        "framework": fw,
-        "framework_confidence": fw_conf,
-        "framework_source": fw_src,
         "quality_blocked_chip": quality_blocked_chip,
-        "source_conflict": chip_conflict or fw_conflict,
+        "source_conflict": chip_conflict,
     }
 
 
 def main():
-    global TRACKER
-
     parser = argparse.ArgumentParser(description="Model hardware classifier pipeline")
     parser.add_argument("--top", type=int, default=None,
                         help="When --years/--quarters is set: top N models per BUCKET "
@@ -524,8 +439,6 @@ def main():
     parser.add_argument("--provider", choices=list(VALID_PROVIDERS), default="OPENAI",
                         help="LLM provider when --llm is set: OPENAI (gpt-4o-mini, default), "
                              "LOCAL (vLLM at localhost:8000 serving gemma-4-e2b-it), or OPENROUTER")
-    parser.add_argument("--viz", action="store_true", default=False,
-                        help="Open a live pipeline dashboard in the browser during the run.")
     args = parser.parse_args()
 
     if args.llm:
@@ -533,24 +446,6 @@ def main():
         os.environ["LLM_PROVIDER"] = args.provider
 
     check_tokens()
-
-    if args.viz:
-        from viz_server import broadcast, start_viz_server
-        from status_tracker import StatusTracker
-        started = start_viz_server()
-        ui_live = Path(__file__).parent / "ui" / "live"
-        run_id = time.strftime("%Y%m%d-%H%M%S")
-        parts = []
-        if args.years: parts.append(f"years={args.years}")
-        if args.top: parts.append(f"top={args.top}")
-        if args.llm: parts.append(f"llm={args.provider}")
-        parts.append(f"workers={args.workers}")
-        TRACKER = StatusTracker(
-            ui_live, run_id,
-            total_models=0,
-            broadcast_fn=(broadcast if started else None),
-            args_summary=" ".join(parts),
-        )
 
     ingest_args = []
     if args.ids_file:
@@ -578,31 +473,19 @@ def main():
     llm_concurrency_args = ["--llm-concurrency", str(args.llm_concurrency)]
 
     if args.ids_file:
-        # Explicit-ID mode: skip the bulk models.csv fetch entirely.
-        if TRACKER:
-            TRACKER.start_stage("fetch_models", note=f"explicit ids: {args.ids_file}")
-            TRACKER.finish_stage("fetch_models", note="explicit ids")
+        pass  # Explicit-ID mode: skip the bulk models.csv fetch entirely.
     elif args.update_models:
-        run(INGEST / "get_models.py", viz_stage="fetch_models",
-            viz_note="fetching from HuggingFace")
-    elif TRACKER:
-        TRACKER.start_stage("fetch_models", note="using cached models.csv")
-        TRACKER.finish_stage("fetch_models", note="cached")
+        run(INGEST / "get_models.py")
 
-    run(INGEST / "get_modelcard.py", extra_args=modelcard_args,
-        viz_stage="modelcards", viz_note="downloading model cards")
-    _update_total_models()
+    run(INGEST / "get_modelcard.py", extra_args=modelcard_args)
 
-    run(INGEST / "get_github.py",
-        viz_stage="github_urls", viz_note="extracting GitHub URLs")
-    run(INGEST / "get_arxiv.py",
-        viz_stage="arxiv_urls", viz_note="extracting arXiv URLs")
+    run(INGEST / "get_github.py")
+    run(INGEST / "get_arxiv.py")
+    run(INGEST / "get_collections.py", extra_args=worker_args)
     run(CLASSIFIERS / "evaluate_github.py",
-        extra_args=worker_args + llm_concurrency_args,
-        viz_stage="eval_github", viz_note="LLM eval on GitHub")
+        extra_args=worker_args + llm_concurrency_args)
     run(CLASSIFIERS / "evaluate_arxiv.py",
-        extra_args=worker_args + llm_concurrency_args,
-        viz_stage="eval_arxiv", viz_note="LLM eval on arXiv")
+        extra_args=worker_args + llm_concurrency_args)
     run_parallel(
         [
             CLASSIFIERS / "from_modelcard.py",
@@ -610,28 +493,9 @@ def main():
             CLASSIFIERS / "from_arxiv.py",
         ],
         extra_args=worker_args,
-        viz_stage="classify",
-        viz_note="heuristic classifiers in parallel",
     )
 
     build_results(llm_concurrency=args.llm_concurrency)
-
-    if TRACKER:
-        TRACKER.finish()
-
-
-def _update_total_models():
-    """After modelcards land, set the progress denominator."""
-    if not TRACKER:
-        return
-    mc_path = Path(__file__).parent / "database" / "modelcards.json"
-    try:
-        with open(mc_path, encoding="utf-8") as f:
-            data = json.load(f)
-        TRACKER.set_total(len(data))
-        TRACKER.update_stage("modelcards", completed=len(data))
-    except Exception:
-        pass
 
 
 def build_results(llm_concurrency=32):
@@ -646,9 +510,6 @@ def build_results(llm_concurrency=32):
         from ask_llm_chip import ask_llm_chip
     else:
         ask_llm_chip = None
-
-    if TRACKER:
-        TRACKER.start_stage("resolve", note="aggregating signals")
 
     with open(db / "modelcards.json", encoding="utf-8") as f:
         modelcards = {m["id"]: m for m in json.load(f)}
@@ -668,7 +529,6 @@ def build_results(llm_concurrency=32):
     llm_queue = []  # (result_index, model_id, kwargs_for_ask_llm_chip)
     queued_indices: set[int] = set()
 
-    total_models = len(modelcards)
     for _i, (model_id, mc) in enumerate(modelcards.items()):
         mca = mc_analysis.get(model_id, {})
         gha = gh_analysis.get(model_id, {})
@@ -697,17 +557,11 @@ def build_results(llm_concurrency=32):
         mc_chip_conf = round(mca.get("chip_provider_confidence", 0.0), 2)
         gh_chip_conf = round(gha.get("chip_provider_confidence", 0.0), 2)
         ax_chip_conf = round(axa.get("chip_provider_confidence", 0.0), 2)
-        mc_fw_conf = round(mca.get("framework_confidence", 0.0), 2)
-        gh_fw_conf = round(gha.get("framework_confidence", 0.0), 2)
-        ax_fw_conf = round(axa.get("framework_confidence", 0.0), 2)
 
         resolved = resolve_initial_conclusion(mc, mca, gha, axa)
         chip = resolved["chip_provider"]
         chip_conf = resolved["chip_provider_confidence"]
         chip_src = resolved["chip_provider_source"]
-        fw = resolved["framework"]
-        fw_conf = resolved["framework_confidence"]
-        fw_src = resolved["framework_source"]
         quality_blocked_chip = resolved["quality_blocked_chip"]
 
         is_derivative = mca.get("is_derivative", False)
@@ -730,11 +584,6 @@ def build_results(llm_concurrency=32):
                 needs_llm = False
             else:
                 needs_llm = True
-        elif chip != "unknown" and chip_conf < LLM_CHIP_CONFLICT_THRESHOLD:
-            implied = FRAMEWORK_CHIP_MAP.get(fw)
-            if implied and chip != implied:
-                needs_llm = True
-
         # For derivative models with a base_model in our dataset, defer to Pass 2
         if is_derivative and needs_llm and base_model_id and base_model_id in mc_analysis:
             needs_llm = False
@@ -773,7 +622,6 @@ def build_results(llm_concurrency=32):
             llm_queue.append((len(results), model_id, {
                 "model_name": model_id,
                 "yaml_library": yaml_library,
-                "framework": fw,
                 "modelcard_excerpt": mc_text[:3000],
                 "section_labeled_text": mca.get("section_labeled_text", ""),
                 "extra_context": extra_context,
@@ -794,9 +642,6 @@ def build_results(llm_concurrency=32):
                 "chip_provider": mca.get("chip_provider", "unknown"),
                 "chip_provider_confidence": mc_chip_conf,
                 "chip_providers_all": mca.get("chip_providers_all", {}),
-                "framework": mca.get("framework", "unknown"),
-                "framework_confidence": mc_fw_conf,
-                "frameworks_all": mca.get("frameworks_all", {}),
                 "matched_sections": mca.get("matched_sections", []),
             },
             "github_resolution": github_resolution,
@@ -804,9 +649,6 @@ def build_results(llm_concurrency=32):
                 "chip_provider": gha.get("chip_provider", "unknown"),
                 "chip_provider_confidence": gh_chip_conf,
                 "chip_providers_all": gha.get("chip_providers_all", {}),
-                "framework": gha.get("framework", "unknown"),
-                "framework_confidence": gh_fw_conf,
-                "frameworks_all": gha.get("frameworks_all", {}),
                 "detection_files": gha.get("detection_files", []),
             },
             "arxiv_resolution": arxiv_resolution,
@@ -814,35 +656,15 @@ def build_results(llm_concurrency=32):
                 "chip_provider": axa.get("chip_provider", "unknown"),
                 "chip_provider_confidence": ax_chip_conf,
                 "chip_providers_all": axa.get("chip_providers_all", {}),
-                "framework": axa.get("framework", "unknown"),
-                "framework_confidence": ax_fw_conf,
-                "frameworks_all": axa.get("frameworks_all", {}),
                 "detection_sections": axa.get("detection_sections", []),
             },
             "conclusion": {
                 "chip_provider": chip,
                 "chip_provider_source": chip_src,
                 "chip_provider_confidence": chip_conf,
-                "framework": fw,
-                "framework_source": fw_src,
-                "framework_confidence": fw_conf,
             },
         })
         results.append(result_rec)
-
-        if TRACKER:
-            idx = len(results) - 1
-            TRACKER.update_stage(
-                "resolve",
-                current=model_id,
-                completed=idx + 1,
-                note=f"initial pass {idx + 1}/{total_models}",
-            )
-            if idx not in queued_indices:
-                TRACKER.record_resolution(
-                    model_id, chip, chip_conf, chip_src or "unknown",
-                    year=mc.get("year"),
-                )
 
     # ── LLM chip fallback (async parallelized) ────────────────────────
     llm_chip_calls = 0
@@ -851,16 +673,6 @@ def build_results(llm_concurrency=32):
     if not llm_enabled():
         if llm_queue:
             print(f"  LLM disabled (--llm not set). Skipping {len(llm_queue)} chip fallback call(s).")
-        if TRACKER:
-            for idx, model_id, _kwargs in llm_queue:
-                r = results[idx]
-                TRACKER.record_resolution(
-                    model_id,
-                    r["conclusion"]["chip_provider"],
-                    r["conclusion"]["chip_provider_confidence"],
-                    r["conclusion"]["chip_provider_source"] or "unknown",
-                    year=r.get("year"),
-                )
     else:
         async def _run_chip_llm_queue():
             async def _call_one(item):
@@ -872,9 +684,6 @@ def build_results(llm_concurrency=32):
                     return idx, model_id, None, 0.0, 0.0, str(e)
 
             return await asyncio.gather(*[_call_one(item) for item in llm_queue])
-
-        if TRACKER:
-            TRACKER.update_stage("resolve", note=f"LLM fallback on {len(llm_queue)} model(s)")
 
         for idx, model_id, llm_chip, llm_conf, cost, err in asyncio.run(_run_chip_llm_queue()):
             total_llm_chip_cost += cost
@@ -1034,13 +843,6 @@ def build_results(llm_concurrency=32):
                     print(f"  LLM said unknown for {model_id} but modelcard has explicit "
                           f"{final_chip} training disclosure — keeping heuristic answer")
 
-            if TRACKER:
-                TRACKER.record_llm_chip(model_id, final_chip, final_conf, cost)
-                TRACKER.record_resolution(
-                    model_id, final_chip, final_conf, final_src,
-                    year=r.get("year"),
-                )
-
     # ── Pass 2: Resolve derivative models via base_model ──────────────
     RUNTIME_CHIP_MAP = {
         "mlx": "apple",
@@ -1049,9 +851,6 @@ def build_results(llm_concurrency=32):
         "onnx": None,
     }
     results_by_id = {r["id"]: r for r in results}
-
-    if TRACKER:
-        TRACKER.update_stage("resolve", note="Pass 2: derivatives")
 
     for r in results:
         mca = mc_analysis.get(r["id"], {})
@@ -1062,8 +861,6 @@ def build_results(llm_concurrency=32):
         current_chip = conclusion["chip_provider"]
         runtime_library = mca.get("runtime_library")
         base_model_id = mca.get("base_model")
-        prev_chip = conclusion["chip_provider"]
-        prev_src = conclusion["chip_provider_source"] or "unknown"
 
         # Check if current chip matches the runtime (i.e., likely wrong)
         runtime_chip = RUNTIME_CHIP_MAP.get(runtime_library)
@@ -1079,12 +876,6 @@ def build_results(llm_concurrency=32):
                 conclusion["chip_provider_confidence"] = min(base_chip_conf, 0.7)
                 conclusion["chip_provider_source"] = "base_model"
                 print(f"  Base model resolution for {r['id']}: {base_model_id} -> {base_chip}")
-                if TRACKER:
-                    TRACKER.override_resolution(
-                        r["id"], base_chip, conclusion["chip_provider_confidence"],
-                        "base_model", prev_chip=prev_chip, prev_source=prev_src,
-                        year=r.get("year"),
-                    )
                 continue
 
         # No base model resolved → prefer unknown over a framework-default guess.
@@ -1096,20 +887,11 @@ def build_results(llm_concurrency=32):
             conclusion["chip_provider_confidence"] = 0.0
             conclusion["chip_provider_source"] = None
             print(f"  Derivative with unresolved base for {r['id']}: collapsing to unknown")
-            if TRACKER:
-                TRACKER.override_resolution(
-                    r["id"], "unknown", 0.0, None,
-                    prev_chip=prev_chip, prev_source=prev_src,
-                    year=r.get("year"),
-                )
 
     # ── Ground truth evaluation ────────────────────────────────────────
     ground_truth = load_ground_truth()
     if ground_truth:
         evaluate_ground_truth(results, ground_truth)
-
-    if TRACKER:
-        TRACKER.finish_stage("resolve", note=f"{len(results)} models resolved")
 
     out_path = db / "results.json"
     with open(out_path, "w", encoding="utf-8") as f:
@@ -1122,8 +904,7 @@ def build_results(llm_concurrency=32):
         c = r["conclusion"]
         gh = r["github_resolution"]
         src_tag = f" [via {gh['source']}]" if gh["source"] else ""
-        print(f"  {r['id']:48s}  chip={c['chip_provider']:10s} ({c['chip_provider_source'] or '?':11s} {c['chip_provider_confidence']:.2f})  "
-              f"fw={c['framework']:10s} ({c['framework_source'] or '?':11s} {c['framework_confidence']:.2f}){src_tag}")
+        print(f"  {r['id']:48s}  chip={c['chip_provider']:10s} ({c['chip_provider_source'] or '?':11s} {c['chip_provider_confidence']:.2f}){src_tag}")
 
     if total_llm_chip_cost > 0:
         print(f"\nLLM chip fallback: {llm_chip_calls} calls, total cost: ${total_llm_chip_cost:.6f}")

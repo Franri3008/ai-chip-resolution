@@ -7,8 +7,8 @@ import re
 from tqdm import tqdm
 
 from signals import (
-    HARDWARE_SIGNALS, FRAMEWORK_SIGNALS,
-    CHIP_PROVIDERS, FRAMEWORKS, MIN_SCORE_THRESHOLD, CONFIDENCE_DIVISOR,
+    HARDWARE_SIGNALS,
+    CHIP_PROVIDERS, MIN_SCORE_THRESHOLD, CONFIDENCE_DIVISOR,
     apply_training_disclosure_cap,
     HARDWARE_DURATION_RE, EXPLICIT_TRAINING_DISCLOSURE_RE, HARDWARE_LITERAL_RE,
 )
@@ -116,38 +116,7 @@ _FINETUNE_BODY_RE = re.compile(
 
 # ── YAML frontmatter keywords → signals ──────────────────────────────
 
-_YAML_LIBRARY_MAP = {
-    "pytorch": ("pytorch", 8),
-    "torch": ("pytorch", 8),
-    "timm": ("pytorch", 8),
-    "transformers": ("pytorch", 8),
-    "tensorflow": ("tensorflow", 8),
-    "tf": ("tensorflow", 8),
-    "jax": ("jax", 8),
-    "flax": ("jax", 6),
-    "paddlepaddle": ("paddlepaddle", 8),
-    "paddle": ("paddlepaddle", 8),
-    "sentence-transformers": ("pytorch", 8),
-    "onnx": ("onnx", 6),
-    "mindspore": ("mindspore", 8),
-    "mindformers": ("mindspore", 8),
-    "mlx": ("pytorch", 3),       # inference runtime; MLX models are PyTorch conversions
-    "coreml": ("pytorch", 3),    # inference runtime; CoreML models are PyTorch conversions
-    "openvino": ("pytorch", 3),  # inference runtime; OpenVINO models are PyTorch conversions
-}
-
-# Framework → implied default chip provider (for YAML authority chip capping)
-_FRAMEWORK_CHIP_MAP = {
-    "pytorch": "nvidia",
-    "tensorflow": "nvidia",
-    "jax": "google_tpu",
-    "paddlepaddle": "nvidia",
-    "mxnet": "nvidia",
-    "mindspore": "huawei_ascend",
-}
-
 _YAML_TAG_KEYWORDS = {
-    # Chip providers
     "tpu": ("google_tpu", 6),
     "cuda": ("nvidia", 5),
     "gpu": ("nvidia", 2),
@@ -171,12 +140,6 @@ _YAML_TAG_KEYWORDS = {
     "dcu": ("hygon", 5),
     "metax": ("metax", 6),
     "muxi": ("metax", 6),
-    # Frameworks
-    "pytorch": ("pytorch", 5),
-    "tensorflow": ("tensorflow", 5),
-    "jax": ("jax", 5),
-    "flax": ("jax", 4),
-    "onnx": ("onnx", 4),
 }
 
 
@@ -240,32 +203,16 @@ def detect_derivative(yaml_text, model_id, body_text=""):
 
 
 def extract_yaml_signals(yaml_text):
-    """Score structured YAML fields (library_name, tags).
-
-    Returns (scores_dict, yaml_framework_or_None).
-    """
+    """Score structured YAML chip-tag signals."""
     scores = {}
     yaml_lower = yaml_text.lower()
-    yaml_framework = None
 
-    # library_name
-    m = re.search(r'library_name:\s*(\S+)', yaml_lower)
-    if m:
-        lib = m.group(1).strip()
-        if lib in _YAML_LIBRARY_MAP:
-            key, pts = _YAML_LIBRARY_MAP[lib]
-            scores[key] = scores.get(key, 0) + pts
-            if key in FRAMEWORKS:
-                yaml_framework = key
-
-    # tags (could be YAML list or inline)
     for tag_match in re.finditer(r'(?:^|\n)\s*-\s+(\S+)', yaml_text):
         tag = tag_match.group(1).strip().lower()
         if tag in _YAML_TAG_KEYWORDS:
             key, pts = _YAML_TAG_KEYWORDS[tag]
             scores[key] = scores.get(key, 0) + pts
 
-    # Also scan tags: [...] inline format
     inline = re.search(r'tags:\s*\[([^\]]+)\]', yaml_lower)
     if inline:
         for tag in inline.group(1).split(","):
@@ -274,7 +221,7 @@ def extract_yaml_signals(yaml_text):
                 key, pts = _YAML_TAG_KEYWORDS[tag]
                 scores[key] = scores.get(key, 0) + pts
 
-    return scores, yaml_framework
+    return scores
 
 
 def split_into_sections(body):
@@ -373,33 +320,25 @@ def scan_section(text, section_type):
 
     explicit_snippets = []
 
-    all_signals = [
-        (HARDWARE_SIGNALS, "hardware"),
-        (FRAMEWORK_SIGNALS, "framework"),
-    ]
+    for provider, signals in HARDWARE_SIGNALS.items():
+        for level, base_weight in [("strong", 5), ("medium", 3), ("weak", 1)]:
+            for pattern in signals.get(level, []):
+                for m in re.finditer(pattern, text, re.IGNORECASE):
+                    ctx_mult = check_context(text, m.start(), m.end())
+                    if ctx_mult == 0.0:
+                        continue
+                    tbl_weight = get_line_weight(m.start())
+                    final = base_weight * section_weight * ctx_mult * tbl_weight
+                    scores[provider] = scores.get(provider, 0) + final
+                    matched = True
 
-    for signal_dict, signal_type in all_signals:
-        for provider, signals in signal_dict.items():
-            for level, base_weight in [("strong", 5), ("medium", 3), ("weak", 1)]:
-                for pattern in signals.get(level, []):
-                    for m in re.finditer(pattern, text, re.IGNORECASE):
-                        ctx_mult = check_context(text, m.start(), m.end())
-                        if ctx_mult == 0.0:
-                            continue
-                        tbl_weight = get_line_weight(m.start())
-                        final = base_weight * section_weight * ctx_mult * tbl_weight
-                        scores[provider] = scores.get(provider, 0) + final
-                        matched = True
-                        
-                        if signal_type == "hardware":
-                            # Extract ~100 chars around the match
-                            start = max(0, m.start() - 100)
-                            end = min(len(text), m.end() + 100)
-                            snippet = text[start:end].replace("\n", " ").strip()
-                            explicit_snippets.append({
-                                "provider": provider,
-                                "snippet": f"...{snippet}..."
-                            })
+                    start = max(0, m.start() - 100)
+                    end = min(len(text), m.end() + 100)
+                    snippet = text[start:end].replace("\n", " ").strip()
+                    explicit_snippets.append({
+                        "provider": provider,
+                        "snippet": f"...{snippet}..."
+                    })
 
     return scores, matched, explicit_snippets
 
@@ -408,13 +347,11 @@ def scan_section(text, section_type):
 
 
 def analyze_modelcard(modelcard_text, model_id=""):
-    """Analyze a single model card and return chip/framework scores."""
+    """Analyze a single model card and return chip-provider scores."""
     if not modelcard_text or not modelcard_text.strip():
         return {
             "chip_provider": "unknown", "chip_provider_score": 0,
             "chip_provider_confidence": 0.0, "chip_providers_all": {},
-            "framework": "unknown", "framework_score": 0,
-            "framework_confidence": 0.0, "frameworks_all": {},
             "matched_sections": [],
         }
 
@@ -423,17 +360,14 @@ def analyze_modelcard(modelcard_text, model_id=""):
     matched_sections = []
     chip_snippets = []
 
-    # 0. Detect derivative/converted model
     is_derivative, base_model, runtime_library = detect_derivative(yaml_text, model_id, body)
 
-    # 1. YAML frontmatter structured signals
-    yaml_scores, yaml_framework = extract_yaml_signals(yaml_text)
+    yaml_scores = extract_yaml_signals(yaml_text)
     for key, sc in yaml_scores.items():
         total_scores[key] = total_scores.get(key, 0) + sc
     if yaml_scores:
         matched_sections.append("yaml_frontmatter")
 
-    # 2. Also regex-scan the YAML text itself (catches things like "tpu" in tags lists)
     yaml_scan_scores, yaml_matched, yaml_snips = scan_section(yaml_text, "yaml_frontmatter")
     for key, sc in yaml_scan_scores.items():
         total_scores[key] = total_scores.get(key, 0) + sc
@@ -441,7 +375,6 @@ def analyze_modelcard(modelcard_text, model_id=""):
         matched_sections.append("yaml_frontmatter")
     chip_snippets.extend(yaml_snips)
 
-    # 3. Split body into sections and scan each
     sections = split_into_sections(body)
     for section_type, section_text in sections:
         sec_scores, sec_matched, sec_snips = scan_section(section_text, section_type)
@@ -449,35 +382,15 @@ def analyze_modelcard(modelcard_text, model_id=""):
         # card describes the conversion/inference process, not training.
         if is_derivative:
             for key in list(sec_scores):
-                if key in CHIP_PROVIDERS:
-                    sec_scores[key] = sec_scores[key] * 0.25
+                sec_scores[key] = sec_scores[key] * 0.25
         for key, sc in sec_scores.items():
             total_scores[key] = total_scores.get(key, 0) + sc
         if sec_matched and section_type not in matched_sections:
             matched_sections.append(section_type)
         chip_snippets.extend(sec_snips)
 
-    # 4. Split into chips and frameworks, round scores
     chip_scores = {k: round(v, 1) for k, v in total_scores.items() if k in CHIP_PROVIDERS and v > 0}
-    fw_scores = {k: round(v, 1) for k, v in total_scores.items() if k in FRAMEWORKS and v > 0}
 
-    # 5. YAML library_name authority: cap competing frameworks
-    #    Anchor on the YAML-declared base score (not inflated by body text).
-    #    Also ensure the YAML-declared framework gets at least cap+1 so it
-    #    always wins over capped competitors.
-    if yaml_framework and yaml_framework in fw_scores:
-        yaml_base = yaml_scores.get(yaml_framework, 0)
-        cap = max(yaml_base * 2, 10)
-        for fw_name in list(fw_scores):
-            if fw_name != yaml_framework:
-                fw_scores[fw_name] = min(fw_scores[fw_name], cap)
-        # Ensure YAML framework wins over capped competitors
-        fw_scores[yaml_framework] = max(fw_scores[yaml_framework], cap + 1)
-
-    # We NO LONGER cap competing chip providers based on framework. 
-    # Explicit chip scores are allowed to accumulate their native tallies.
-
-    # Determine top chip provider
     sorted_chips = sorted(chip_scores.items(), key=lambda x: -x[1])
     if sorted_chips and sorted_chips[0][1] >= MIN_SCORE_THRESHOLD:
         top_chip_name, top_chip_sc = sorted_chips[0]
@@ -486,18 +399,10 @@ def analyze_modelcard(modelcard_text, model_id=""):
     else:
         top_chip_name, top_chip_sc, chip_conf = "unknown", 0, 0.0
 
-    # Determine top framework
-    sorted_fw = sorted(fw_scores.items(), key=lambda x: -x[1])
-    if sorted_fw and sorted_fw[0][1] >= MIN_SCORE_THRESHOLD:
-        top_fw_name, top_fw_sc = sorted_fw[0]
-        fw_conf = min(1.0, round(top_fw_sc / CONFIDENCE_DIVISOR, 2))
-    else:
-        top_fw_name, top_fw_sc, fw_conf = "unknown", 0, 0.0
-
     # Build section-labeled text for LLM consumption.
     # Ordering: surface training-bearing content first so the LLM's limited window
-    # isn't eaten by YAML license boilerplate (e.g. Llama 3.1's ~8KB license).
-    # Priority: training > compatibility > body > references; YAML last (trimmed).
+    # isn't eaten by YAML license boilerplate. Priority: training > compatibility >
+    # body > references; YAML last (trimmed).
     _PRIORITY = {"training": 0, "compatibility": 2, "body": 3, "references": 4}
     labeled_sections = []
     ordered = sorted(
@@ -510,8 +415,6 @@ def analyze_modelcard(modelcard_text, model_id=""):
             continue
         label = section_type.upper().replace("_", " ")
         labeled_sections.append(f"=== [{label}] ===\n{trimmed}")
-    # YAML last, trimmed — the signal it carries (library_name/tags) is already
-    # passed to the LLM via the `yaml_library` kwarg, so the full block is low-value.
     yaml_trimmed = yaml_text.strip()
     if yaml_trimmed:
         yaml_tail = yaml_trimmed[:800]
@@ -523,10 +426,6 @@ def analyze_modelcard(modelcard_text, model_id=""):
         "chip_provider_score": top_chip_sc,
         "chip_provider_confidence": chip_conf,
         "chip_providers_all": dict(sorted_chips),
-        "framework": top_fw_name,
-        "framework_score": top_fw_sc,
-        "framework_confidence": fw_conf,
-        "frameworks_all": dict(sorted_fw),
         "matched_sections": matched_sections,
         "chip_snippets": chip_snippets,
         "section_labeled_text": section_labeled_text,
@@ -567,15 +466,13 @@ def main():
 
     # Summary
     print(f"\nResults saved to {output_path}")
-    print(f"{'Model':50s} {'Chip':12s} {'Conf':6s} {'Framework':12s} {'Conf':6s}  All chips")
-    print("-" * 120)
+    print(f"{'Model':50s} {'Chip':12s} {'Conf':6s}  All chips")
+    print("-" * 100)
     for r in results:
         chip = r.get("chip_provider", "unknown")
         chip_conf = r.get("chip_provider_confidence", 0)
-        fw = r.get("framework", "unknown")
-        fw_conf = r.get("framework_confidence", 0)
         all_chips = r.get("chip_providers_all", {})
-        print(f"  {r['id']:48s} {chip:12s} {chip_conf:<6.2f} {fw:12s} {fw_conf:<6.2f}  {all_chips}")
+        print(f"  {r['id']:48s} {chip:12s} {chip_conf:<6.2f}  {all_chips}")
 
 
 if __name__ == "__main__":

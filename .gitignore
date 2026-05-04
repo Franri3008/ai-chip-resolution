@@ -14,13 +14,10 @@ keys/*
 database/*.json
 database/*.csv
 database/snapshot_*/
+database/runs/
 
-# Research run artifacts
-research/*.log
-research/__pycache__/
-research/full_run_ids.txt
-research/chinese_ascend_supplement_ids.txt
-research/NOTES.md
+# Run logs
+logs/
 
 # Local test artifacts
 tests/__pycache__/
