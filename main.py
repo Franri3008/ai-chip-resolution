@@ -417,8 +417,11 @@ def main():
                         help="Like --years but with quarterly buckets (4 per year). "
                              "Example: --quarters 2022-2026 --top 50")
     parser.add_argument("--source-csv", type=str, default=None,
-                        help="Override source CSV (default: database/models.csv). "
-                             "Use database/models_dedup.csv to sample from family-deduplicated rows.")
+                        help="Override source CSV (default: database/models.csv).")
+    parser.add_argument("--deduplicate", action="store_true", default=False,
+                        help="Collapse model variants (sizes, quantizations, fine-tunes) into "
+                             "family stems before applying --top filtering. Distinct products "
+                             "(Qwen3-VL, Qwen3-Coder, etc.) are preserved.")
     parser.add_argument("--update-models", action="store_true", default=False,
                         help="Re-fetch models.csv from HuggingFace (default: use existing)")
     parser.add_argument("--ids-file", type=str, default=None,
@@ -468,6 +471,8 @@ def main():
                 print(f"--source-csv not found: {args.source_csv}")
                 sys.exit(1)
             ingest_args += ["--source-csv", csv_abs]
+        if args.deduplicate:
+            ingest_args += ["--deduplicate"]
     modelcard_args = ingest_args + ["--workers", str(args.workers)]
     worker_args = ["--workers", str(args.workers)]
     llm_concurrency_args = ["--llm-concurrency", str(args.llm_concurrency)]

@@ -17,6 +17,7 @@ hf_logging.set_verbosity_error();
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from _keys import hf_token  # noqa: E402
+from _dedup import deduplicate_rows  # noqa: E402
 
 login(token=hf_token());
 
@@ -89,9 +90,12 @@ parser.add_argument("--ids-file", type=str, default=None,
                          "When set, skips the top-N popularity sampling and processes "
                          "exactly the listed IDs (useful for evaluation harnesses).")
 parser.add_argument("--source-csv", type=str, default=None,
-                    help="Override the source CSV path (default: database/models.csv). "
-                         "Use database/models_dedup.csv to sample from family-deduplicated "
-                         "model list.")
+                    help="Override the source CSV path (default: database/models.csv).")
+parser.add_argument("--deduplicate", action="store_true", default=False,
+                    help="Collapse model variants (sizes, quantizations, fine-tunes) "
+                         "into family stems before applying --top filtering. Keeps the "
+                         "most-downloaded representative per family. Distinct products "
+                         "(e.g. Qwen3 vs Qwen3-VL vs Qwen3-Coder) are preserved.")
 args = parser.parse_args()
 
 if args.years and args.quarters:
@@ -128,6 +132,15 @@ if args.ids_file:
 else:
  with open(csv_path, newline="", encoding="utf-8") as f:
     reader = csv.DictReader(f)
+
+    if args.deduplicate:
+        # Collapse size/quant/fine-tune variants into one row per family stem.
+        # The CSV is sorted by downloads desc, so the first row per stem is the
+        # most-downloaded representative.
+        deduped, n_in, n_out = deduplicate_rows(reader)
+        print(f"Deduplication: {n_in} rows → {n_out} family representatives "
+              f"({n_in - n_out} variants collapsed)")
+        reader = iter(deduped)
 
     if target_quarter_years:
         # Top N per (year, quarter): scan CSV in download-rank order and fill
