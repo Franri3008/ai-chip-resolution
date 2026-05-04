@@ -216,28 +216,15 @@ python -m http.server 8080 &   # serve current dir
 - `scripts/classifiers/`: heuristic source scoring and classification
 - `scripts/llm/`: LLM-assisted fallback logic
 - `scripts/_keys.py`: shared HF / GitHub token loader
-- `scripts/run_monthly_and_top10k.sh`: two-pass sweep (top 50/month + top 10k all-time) with snapshotting into `database/runs/`
+- `scripts/run.sh`: preset-mode runner (`monthly` / `alltime` / `both`) — wraps `main.py` and snapshots into `database/runs/`
 - `tests/`: regression tests and ground-truth labels
 - `tests/eval/`: standalone scorer + curated eval slice
 - `ui/dashboard.html`: local result inspection UI
-- `Makefile`: top-level entry points (`setup`, `run`, `sweep`, `score`, `dashboard`, `test`, `clean`)
-
-## Make targets
-
-```bash
-make setup                              # bash setup.sh
-make run ARGS="--top 100 --workers 8"   # python main.py with custom args
-make sweep                              # run_monthly_and_top10k.sh
-make score RESULTS=path/to/results.json # score against tests/ground_truth*.csv
-make dashboard                          # serve ui/dashboard.html on :8080
-make test                               # pytest
-make clean                              # rm pycache + .pytest_cache
-```
 
 ## Outputs
 
 Generated artifacts are written to `database/` during a run, then archived
-into `database/runs/` by `run_monthly_and_top10k.sh`:
+into `database/runs/` by `scripts/run.sh`:
 
 - `results.json`: final classifications plus trace metadata
 - `modelcard_chip_analysis.json`: model-card scoring output
