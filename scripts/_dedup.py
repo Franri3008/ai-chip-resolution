@@ -33,6 +33,7 @@ _VARIANT_RE = re.compile(
     r"Instruct|Chat|Base|it|ft|SFT|DPO|ORPO|RLHF|RLAIF|GRPO|"
     r"Reasoning|Thinking|Reasoner|Foundation|Pretrained|Pretraining|"
     r"Preview|Distill|Distilled|Mini|Lite|Pro|Ultra|Max|"
+    r"Flash|Turbo|Air|Plus|"
     r"Original|Final|Latest|Stable|Beta|Alpha|RC\d*|"
     r"Hindi|English|Multilingual|Multi|"
     r"FineTuned|finetuned|Adapter|LoRA"
@@ -41,6 +42,13 @@ _VARIANT_RE = re.compile(
 )
 
 _DATE_RE = re.compile(r"[-_](?:20\d{2}|2[0-9])\d{2,8}(?=$|[-_])")
+
+# Minor-version suffix: -v1, -v1.5, -v0.3 (LOWERCASE v + dotted digits).
+# Case-sensitive on purpose: HF convention uses `-v\d` for minor-version
+# bumps (Mistral-7B-v0.1, bge-large-en-v1.5) and `-V\d` for generation
+# markers (DeepSeek-V2, DeepSeek-V4). The latter must stay intact so V2/V4
+# don't collapse into the same family.
+_VERSION_RE = re.compile(r"[-_]v\d+(?:\.\d+)*(?=$|[-_])")
 
 _SIZE_RE = re.compile(r"[-_][A-Z]?\d+(?:\.\d+)?[BbMmKk](?=$|[-_])")
 
@@ -64,6 +72,7 @@ def family_stem(model_id: str) -> str:
     s = name
     s = _strip_repeated(_PRECISION_RE, s)
     s = _strip_repeated(_VARIANT_RE, s)
+    s = _strip_repeated(_VERSION_RE, s)
     s = _strip_repeated(_DATE_RE, s)
     s = _strip_repeated(_SIZE_RE, s)
     s = _strip_repeated(_HZ_RE, s)
