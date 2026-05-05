@@ -96,6 +96,11 @@ parser.add_argument("--deduplicate", action="store_true", default=False,
                          "into family stems before applying --top filtering. Keeps the "
                          "most-downloaded representative per family. Distinct products "
                          "(e.g. Qwen3 vs Qwen3-VL vs Qwen3-Coder) are preserved.")
+parser.add_argument("--list-ids", type=str, default=None,
+                    help="Resolve the filtered model_ids list and write it to this file "
+                         "(one id per line), then exit without fetching model cards. "
+                         "Used by run.sh both-mode to compute the union of monthly and "
+                         "alltime ID sets before running the pipeline once.")
 args = parser.parse_args()
 
 if args.years and args.quarters:
@@ -114,8 +119,9 @@ id_to_year: dict[str, int] = {}
 id_to_month: dict[str, int] = {}
 
 if args.ids_file:
-    # Explicit-ID mode: bypass models.csv entirely. Year/month are unknown for
-    # these rows and will simply be omitted from the output records.
+    # Explicit-ID mode: read the supplied list verbatim. Year/month are
+    # looked up from models.csv when available so unified runs (run.sh both)
+    # still tag records by creation month for the dashboard.
     with open(args.ids_file, encoding="utf-8") as f:
         raw_ids = [
             line.strip()
@@ -129,6 +135,22 @@ if args.ids_file:
             seen.add(mid)
             model_ids.append(mid)
     print(f"Explicit-ID mode: {len(model_ids)} model(s) from {args.ids_file}")
+
+    if os.path.exists(csv_path):
+        wanted = set(model_ids)
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                if row["id"] in wanted:
+                    yr, mo = _row_year_month(row)
+                    if yr is not None:
+                        id_to_year[row["id"]] = yr
+                    if mo is not None:
+                        id_to_month[row["id"]] = mo
+                    if len(id_to_year) >= len(wanted):
+                        break
+        if id_to_year:
+            print(f"  Year/month resolved for {len(id_to_year)}/{len(model_ids)} ids "
+                  f"from {os.path.relpath(csv_path)}")
 else:
  with open(csv_path, newline="", encoding="utf-8") as f:
     reader = csv.DictReader(f)
@@ -218,6 +240,17 @@ else:
                 id_to_year[row["id"]] = yr
             if mo is not None:
                 id_to_month[row["id"]] = mo
+
+if args.list_ids:
+    # Resolve-and-exit: write the filtered ID list and skip HF fetches. The
+    # caller (run.sh both-mode) unions multiple lists and runs the pipeline
+    # once over the result.
+    with open(args.list_ids, "w", encoding="utf-8") as f:
+        for mid in model_ids:
+            f.write(mid + "\n")
+    print(f"Wrote {len(model_ids)} model IDs → {args.list_ids}")
+    sys.exit(0)
+
 
 def _fetch(model_id):
     try:
