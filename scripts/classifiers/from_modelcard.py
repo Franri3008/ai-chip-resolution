@@ -97,6 +97,36 @@ _DERIVATIVE_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Stronger name patterns that flag a model as a quant / runtime-format
+# wrapper on their own — without needing a YAML `base_model:` field. The
+# soft `_DERIVATIVE_NAME_RE` above matches harmless tokens like "8bit" or
+# "fp16" so it requires base_model corroboration; this regex only triggers
+# on signals that are essentially never used outside of derivative
+# wrappers (MLX/GGUF/AWQ/EXL2 suffixes, mlx-community org, bnb quants,
+# llama.cpp Q-labels). When this fires we also infer runtime_library
+# from the same suffix so main.py's collapse-to-unknown step can act
+# even though the upstream YAML omitted library_name.
+_STRONG_DERIVATIVE_NAME_RE = re.compile(
+    r'^mlx-community/|'                       # entire org is MLX conversions
+    r'-(?:MLX|GGUF|AWQ|EXL2)(?:-|/|$)|'        # explicit-format suffix
+    r'-bnb-[48]bit\b|'                          # bitsandbytes quants
+    r'-(?:GPTQ|INT[48])\b|'
+    r'-Q[2-8]_(?:K(?:_[SML])?|0|1)\b',          # GGUF quant labels (Q4_K_M, Q5_K_S, Q8_0…)
+    re.IGNORECASE,
+)
+
+# Map name-suffix → runtime_library used by main.py's RUNTIME_CHIP_MAP.
+# Lets the collapse step recognise wrappers whose YAML didn't set
+# library_name (common for community quants).
+_NAME_RUNTIME_PATTERNS = (
+    (re.compile(r'^mlx-community/|-MLX(?:-|/|$)', re.IGNORECASE), 'mlx'),
+    (re.compile(r'-GGUF(?:-|/|$)', re.IGNORECASE), 'gguf'),
+    (re.compile(r'-AWQ(?:-|/|$)', re.IGNORECASE), 'awq'),
+    (re.compile(r'-GPTQ(?:-|/|$)', re.IGNORECASE), 'gptq'),
+    (re.compile(r'-EXL2(?:-|/|$)', re.IGNORECASE), 'exl2'),
+    (re.compile(r'-bnb-[48]bit\b', re.IGNORECASE), 'bnb'),
+)
+
 # Fine-tune / upstream-derivative markers that appear in the card text itself.
 # When the title heading or an early body sentence describes this model as a
 # fine-tune of an upstream model, any linked arXiv paper is almost always for
@@ -184,6 +214,16 @@ def detect_derivative(yaml_text, model_id, body_text=""):
 
     # Check model name for derivative indicators
     name_is_derivative = bool(_DERIVATIVE_NAME_RE.search(model_id))
+    strong_name_match = bool(_STRONG_DERIVATIVE_NAME_RE.search(model_id))
+
+    # Infer runtime_library from the model name when YAML didn't supply one
+    # (very common for community quants under mlx-community/, *-AWQ, *-bnb-).
+    # The chip-collapse step in main.py needs this to recognize the wrapper.
+    if not runtime_library and strong_name_match:
+        for rx, rt in _NAME_RUNTIME_PATTERNS:
+            if rx.search(model_id):
+                runtime_library = rt
+                break
 
     # Card-text derivative indicators: a "Fine-Tuned …" title heading or an
     # explicit "fine-tuned from <hf-org>/<repo>" body sentence both mark this
@@ -195,6 +235,7 @@ def detect_derivative(yaml_text, model_id, body_text=""):
 
     is_derivative = (
         bool(runtime_library)
+        or strong_name_match
         or (name_is_derivative and base_model is not None)
         or finetune_derivative
     )

@@ -113,14 +113,31 @@ HARDWARE_SIGNALS = {
         "file_presence": [],
     },
     "apple": {
+        # All three of MLX / MPS / Metal collide with non-Apple usage in the
+        # wild — same shape as the kunlun/dtk/hexagon issues. Bare patterns
+        # were matching:
+        #   • MLX deployment guides on every multi-target inference modelcard,
+        #   • CPU/MPS/CUDA device-picker enumerations in Docling/Granite,
+        #   • the literal English noun "metal" in clinical text (NCBI MedCPT).
+        # Tighten each to either a framework/training context or an Apple
+        # qualifier. apple-silicon / coreml / coremltools / anekit are
+        # already specific enough to stand alone.
         "strong": [
-            r'\bmlx\b',
+            # MLX: only as a training framework or when adjacent to a training verb.
+            r'\bMLX\s+(?:framework|training|implementation\s+for\s+training)\b',
+            r'(?:trained?|pretrained?|fine[-_]?tuned?)\b[^.\n]{0,80}\bMLX\b',
+            # MPS: only as an explicit torch device call (not a CPU/MPS/CUDA toggle).
+            r'torch\.device\(\s*["\']mps["\']\s*\)',
+            r'\bMetal\s+Performance\s+Shaders\b',
+            # CoreML — already specific.
             r'\bcoreml\b|core[-_]?ml',
-            r'\bmetal\b',
-            r'\bmps\b',
-            r'apple[-_]?silicon',
-            r'\banekit\b',
             r'coremltools',
+            # Metal: drop the bare noun; require an Apple-stack qualifier.
+            r'(?:Apple|MTL)\s*Metal\b',
+            r'\bMetal\s+(?:API|framework|shader|kernel)\b',
+            # Unambiguous identifiers.
+            r'apple[-_\s]?silicon',
+            r'\banekit\b',
         ],
         "medium": [
             r'\bm[1-4][-_ ](?:pro|max|ultra)\b',

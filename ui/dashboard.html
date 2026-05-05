@@ -122,6 +122,10 @@
         let DATA = [];
         let currentStatsMode = 'results';
         let currentYearMetric = 'count';
+        // Time bucketing for the Year Mode chart: 'month' (default), 'quarter',
+        // or 'year'. Wider buckets aggregate more models per x — share-of-bucket
+        // percentages are much less noisy at quarterly / yearly granularity.
+        let currentYearBucket = 'month';
 
         function distinctYears() {
             const years = new Set();
@@ -135,6 +139,13 @@
 
         function setYearMetric(metric) {
             currentYearMetric = metric;
+            if (SELECTED_INDEX == null) {
+                document.getElementById('diagram').innerHTML = drawGlobalStats();
+            }
+        }
+
+        function setYearBucket(bucket) {
+            currentYearBucket = bucket;
             if (SELECTED_INDEX == null) {
                 document.getElementById('diagram').innerHTML = drawGlobalStats();
             }
@@ -161,15 +172,25 @@
         }
 
         function modelMatchesFilters(m) {
-            if (QUARTER_FILTER) {
-                if (quarterOf(m) !== QUARTER_FILTER) return false;
-            }
+            if (!modelMatchesChartFilters(m)) return false;
+            if (NAME_FILTER && !m.id.toLowerCase().includes(NAME_FILTER)) return false;
+            return true;
+        }
+
+        // Chart-side filter: same quarter + chip predicates as the model
+        // dropdown, but without the typeahead NAME_FILTER (that one is
+        // ephemeral search state, not a committed filter on the dataset).
+        function modelMatchesChartFilters(m) {
+            if (QUARTER_FILTER && quarterOf(m) !== QUARTER_FILTER) return false;
             if (CHIP_FILTER) {
                 const chip = (m.conclusion && m.conclusion.chip_provider) || 'unknown';
                 if (chip !== CHIP_FILTER) return false;
             }
-            if (NAME_FILTER && !m.id.toLowerCase().includes(NAME_FILTER)) return false;
             return true;
+        }
+
+        function chartData() {
+            return RAW_DATA.filter(modelMatchesChartFilters);
         }
 
         function populateFilterDropdowns() {
@@ -325,11 +346,17 @@
         document.getElementById('quarter-filter').addEventListener('change', function () {
             QUARTER_FILTER = this.value;
             renderModelSelect();
+            if (SELECTED_INDEX == null) {
+                document.getElementById('diagram').innerHTML = drawGlobalStats();
+            }
         });
 
         document.getElementById('chip-filter').addEventListener('change', function () {
             CHIP_FILTER = this.value;
             renderModelSelect();
+            if (SELECTED_INDEX == null) {
+                document.getElementById('diagram').innerHTML = drawGlobalStats();
+            }
         });
 
         (function bindCombobox() {
@@ -435,16 +462,33 @@
         function drawGlobalStats() {
             let chartHTML = '';
 
+            // All charts share the same quarter+chip filter view as the
+            // dropdown above. The Year-Mode time series still binds to the
+            // unfiltered dataset for the QUARTER filter (filtering by a single
+            // quarter would collapse the x axis to one point); the chip filter
+            // does apply there because isolating one provider's trajectory is a
+            // valid lens.
+            const filtered = chartData();
+            const buildBanner = (parts, count) => parts.length
+                ? `<div style="font-size:11px; color:#666; margin-bottom:14px;">Filtered to <strong>${count}</strong>/${RAW_DATA.length} models — ${parts.join(', ')}</div>`
+                : '';
+            const sharedFilterParts = [];
+            if (QUARTER_FILTER) sharedFilterParts.push(`quarter=${QUARTER_FILTER}`);
+            if (CHIP_FILTER) sharedFilterParts.push(`chip=${CHIP_FILTER}`);
+            const filterBanner = buildBanner(sharedFilterParts, filtered.length);
+
             if (currentStatsMode === 'results') {
                 const counts = {};
                 let total = 0;
-                RAW_DATA.forEach(d => {
+                filtered.forEach(d => {
                     const provider = (d.conclusion && d.conclusion.chip_provider) ? d.conclusion.chip_provider : 'unknown';
                     counts[provider] = (counts[provider] || 0) + 1;
                     total++;
                 });
 
-                if (total === 0) return '<p class="empty">Select a model to view its classification path.</p>';
+                if (total === 0) {
+                    chartHTML = `<p class="empty" style="margin-top:0;">${sharedFilterParts.length ? 'No models match the current filters.' : 'Select a model to view its classification path.'}</p>`;
+                } else {
 
                 const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
 
@@ -488,9 +532,10 @@
                         ${legendHTML}
                     </div>
                 `;
+                }
             } else if (currentStatsMode === 'comparison') {
                 let match = 0, mismatch = 0, noEval = 0;
-                RAW_DATA.forEach(d => {
+                filtered.forEach(d => {
                     const correct = d.conclusion && d.conclusion.correct;
                     if (correct === 1) match++;
                     else if (correct === 0) mismatch++;
@@ -498,7 +543,9 @@
                 });
 
                 const total = match + mismatch + noEval;
-                if (total === 0) return '<p class="empty">Select a model to view its classification path.</p>';
+                if (total === 0) {
+                    chartHTML = `<p class="empty" style="margin-top:0;">${sharedFilterParts.length ? 'No models match the current filters.' : 'Select a model to view its classification path.'}</p>`;
+                } else {
 
                 const evaluated = match + mismatch;
                 const matchPct = (match / total) * 100;
@@ -521,23 +568,61 @@
                         ${noEval > 0 ? `<div style="display: flex; align-items: center; gap: 6px;"><span style="display:inline-block; width:14px; height:14px; background:#e0e0e0; border-radius:3px;"></span> Not evaluated (${noEval})</div>` : ''}
                     </div>
                 `;
+                }
             } else if (currentStatsMode === 'year') {
                 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-                const byMonth = {};
-                RAW_DATA.forEach(d => {
+                // Year Mode shares the chip filter but ignores the quarter
+                // filter — pinning the data to a single quarter would reduce
+                // the time series to one bucket. Show the user that distinction.
+                const yearFiltered = CHIP_FILTER
+                    ? RAW_DATA.filter(d => ((d.conclusion && d.conclusion.chip_provider) || 'unknown') === CHIP_FILTER)
+                    : RAW_DATA;
+
+                // Bucket strategy. Each strategy maps a (year, month) pair into
+                // an integer key, exposes the year for cross-bucket totals, and
+                // formats a tick label. Keeping these as a single object keeps
+                // the rest of the chart code (sort, label stride, year-start tick
+                // highlight, totals) generic across granularities.
+                const bucketStrategies = {
+                    month: {
+                        key:       (y, m) => y * 100 + m,
+                        yearOf:    k => Math.floor(k / 100),
+                        isYearStart: k => (k % 100) === 1,
+                        label:     k => `${MONTH_NAMES[(k % 100) - 1]} '${String(Math.floor(k / 100)).slice(-2)}`,
+                        unit:      'month',
+                    },
+                    quarter: {
+                        key:       (y, m) => y * 10 + Math.floor((m - 1) / 3) + 1,
+                        yearOf:    k => Math.floor(k / 10),
+                        isYearStart: k => (k % 10) === 1,
+                        label:     k => `${Math.floor(k / 10)} Q${k % 10}`,
+                        unit:      'quarter',
+                    },
+                    year: {
+                        key:       (y, m) => y,
+                        yearOf:    k => k,
+                        isYearStart: () => true,
+                        label:     k => String(k),
+                        unit:      'year',
+                    },
+                };
+                const bucket = bucketStrategies[currentYearBucket] || bucketStrategies.month;
+
+                const byBucket = {};
+                yearFiltered.forEach(d => {
                     if (d.year == null || d.month == null) return;
-                    const key = d.year * 100 + d.month;
+                    const key = bucket.key(d.year, d.month);
                     const provider = (d.conclusion && d.conclusion.chip_provider) ? d.conclusion.chip_provider : 'unknown';
-                    if (!byMonth[key]) byMonth[key] = {};
-                    byMonth[key][provider] = (byMonth[key][provider] || 0) + 1;
+                    if (!byBucket[key]) byBucket[key] = {};
+                    byBucket[key][provider] = (byBucket[key][provider] || 0) + 1;
                 });
 
-                const monthKeys = Object.keys(byMonth).map(Number).sort((a, b) => a - b);
-                const years = Array.from(new Set(monthKeys.map(k => Math.floor(k / 100)))).sort((a, b) => a - b);
+                const bucketKeys = Object.keys(byBucket).map(Number).sort((a, b) => a - b);
+                const years = Array.from(new Set(bucketKeys.map(bucket.yearOf))).sort((a, b) => a - b);
 
-                if (monthKeys.length < 2) {
-                    chartHTML = `<p class="empty" style="margin-top:0;">Year Mode needs at least 2 months of data with a <code>year</code> and <code>month</code> field.</p>`;
+                if (bucketKeys.length < 2) {
+                    chartHTML = `<p class="empty" style="margin-top:0;">Year Mode needs at least 2 ${bucket.unit}s of data with a <code>year</code> and <code>month</code> field.</p>`;
                 } else {
                     const colors = {
                         'nvidia': '#4caf50',
@@ -553,7 +638,7 @@
                     };
 
                     const providers = new Set();
-                    monthKeys.forEach(k => Object.keys(byMonth[k]).forEach(p => providers.add(p)));
+                    bucketKeys.forEach(k => Object.keys(byBucket[k]).forEach(p => providers.add(p)));
                     const providerList = Array.from(providers).sort((a, b) => {
                         if (a === 'unknown') return 1;
                         if (b === 'unknown') return -1;
@@ -564,11 +649,11 @@
 
                     const series = {};
                     providerList.forEach(p => {
-                        series[p] = monthKeys.map(k => {
-                            const monthData = byMonth[k];
-                            const count = monthData[p] || 0;
+                        series[p] = bucketKeys.map(k => {
+                            const bucketData = byBucket[k];
+                            const count = bucketData[p] || 0;
                             if (metric === 'percent') {
-                                const t = Object.values(monthData).reduce((a, b) => a + b, 0);
+                                const t = Object.values(bucketData).reduce((a, b) => a + b, 0);
                                 return t > 0 ? count / t * 100 : 0;
                             }
                             return count;
@@ -590,7 +675,7 @@
                     const plotW = W - padL - padR;
                     const plotH = H - padT - padB;
 
-                    const xFor = (i) => padL + (monthKeys.length === 1 ? plotW / 2 : i / (monthKeys.length - 1) * plotW);
+                    const xFor = (i) => padL + (bucketKeys.length === 1 ? plotW / 2 : i / (bucketKeys.length - 1) * plotW);
                     const yFor = (v) => padT + plotH - (v / niceMax * plotH);
 
                     const gridTicks = 5;
@@ -603,19 +688,19 @@
                         grid += `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-size="11" fill="#888">${label}</text>`;
                     }
 
-                    const labelStride = Math.max(1, Math.ceil(monthKeys.length / 12));
+                    // Cap visible tick labels at ~12 regardless of bucket
+                    // granularity (12 monthly labels ≈ 1 yr; 12 quarters ≈ 3 yr;
+                    // 12 yearly labels ≈ a decade — all comfortable to read).
+                    const labelStride = Math.max(1, Math.ceil(bucketKeys.length / 12));
                     let xLabels = '';
-                    monthKeys.forEach((k, i) => {
+                    bucketKeys.forEach((k, i) => {
                         const x = xFor(i);
-                        const m = k % 100;
-                        const y = Math.floor(k / 100);
-                        const isJan = m === 1;
-                        const tickLen = isJan ? 6 : 3;
-                        const tickColor = isJan ? '#888' : '#bbb';
+                        const isYearStart = bucket.isYearStart(k);
+                        const tickLen = isYearStart ? 6 : 3;
+                        const tickColor = isYearStart ? '#888' : '#bbb';
                         xLabels += `<line x1="${x}" x2="${x}" y1="${padT + plotH}" y2="${padT + plotH + tickLen}" stroke="${tickColor}" stroke-width="1"/>`;
-                        if (i % labelStride === 0 || i === monthKeys.length - 1) {
-                            const lbl = `${MONTH_NAMES[m - 1]} '${String(y).slice(-2)}`;
-                            xLabels += `<text x="${x}" y="${padT + plotH + 22}" text-anchor="middle" font-size="11" fill="#555">${lbl}</text>`;
+                        if (i % labelStride === 0 || i === bucketKeys.length - 1) {
+                            xLabels += `<text x="${x}" y="${padT + plotH + 22}" text-anchor="middle" font-size="11" fill="#555">${bucket.label(k)}</text>`;
                         }
                     });
 
@@ -626,7 +711,7 @@
 
                     let lines = '';
                     let legendHTML = '';
-                    const pointRadius = monthKeys.length > 24 ? 2.5 : 3.5;
+                    const pointRadius = bucketKeys.length > 24 ? 2.5 : 3.5;
 
                     // Stack ordering for the area chart: largest provider at the
                     // bottom (most stable visual band), 'unknown' at the top so
@@ -643,9 +728,9 @@
 
                     if (metric === 'percent') {
                         // Stacked 100% area chart: each provider's slice is
-                        // share-of-month. Bands sum to 100% per x.
+                        // share-of-bucket. Bands sum to 100% per x.
                         // y0[i] is the cumulative bottom for provider p at x=i.
-                        const y0 = new Array(monthKeys.length).fill(0);
+                        const y0 = new Array(bucketKeys.length).fill(0);
                         stackOrder.forEach(p => {
                             const color = colors[p] || '#999';
                             const top = series[p].map((v, i) => y0[i] + v);
@@ -659,15 +744,11 @@
                             lines += `<polygon points="${fwd} ${back}" fill="${color}" fill-opacity="0.85" stroke="${color}" stroke-width="0.5"/>`;
                             // Hover tooltips at each x: show this provider's share at the band's top.
                             top.forEach((v, i) => {
-                                const k = monthKeys[i];
-                                const m = k % 100;
-                                const yr = Math.floor(k / 100);
-                                const monthLabel = `${MONTH_NAMES[m - 1]} ${yr}`;
+                                const k = bucketKeys[i];
                                 const share = series[p][i].toFixed(1);
-                                // Invisible hover circle on the top edge
-                                lines += `<circle cx="${xFor(i)}" cy="${yFor(v)}" r="${pointRadius + 1.5}" fill="${color}" fill-opacity="0" stroke="none"><title>${p} ${monthLabel}: ${share}%</title></circle>`;
+                                lines += `<circle cx="${xFor(i)}" cy="${yFor(v)}" r="${pointRadius + 1.5}" fill="${color}" fill-opacity="0" stroke="none"><title>${p} ${bucket.label(k)}: ${share}%</title></circle>`;
                             });
-                            for (let i = 0; i < monthKeys.length; i++) y0[i] = top[i];
+                            for (let i = 0; i < bucketKeys.length; i++) y0[i] = top[i];
                         });
                         // Legend in stack order so the top of the stack is the top of the legend.
                         stackOrder.forEach(p => {
@@ -675,7 +756,7 @@
                             legendHTML += `<div style="display:flex; align-items:center; gap:6px;"><span style="display:inline-block; width:14px; height:14px; background:${color}; border-radius:3px;"></span> ${p}</div>`;
                         });
                     } else {
-                        // Count mode keeps the lines+points form (per-month
+                        // Count mode keeps the lines+points form (per-bucket
                         // absolute counts don't add to a meaningful total, so
                         // stacking is misleading).
                         providerList.forEach(p => {
@@ -683,11 +764,8 @@
                             const points = series[p].map((v, i) => `${xFor(i)},${yFor(v)}`).join(' ');
                             lines += `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
                             series[p].forEach((v, i) => {
-                                const k = monthKeys[i];
-                                const m = k % 100;
-                                const yr = Math.floor(k / 100);
-                                const monthLabel = `${MONTH_NAMES[m - 1]} ${yr}`;
-                                lines += `<circle cx="${xFor(i)}" cy="${yFor(v)}" r="${pointRadius}" fill="${color}" stroke="#fff" stroke-width="1"><title>${p} ${monthLabel}: ${v}</title></circle>`;
+                                const k = bucketKeys[i];
+                                lines += `<circle cx="${xFor(i)}" cy="${yFor(v)}" r="${pointRadius}" fill="${color}" stroke="#fff" stroke-width="1"><title>${p} ${bucket.label(k)}: ${v}</title></circle>`;
                             });
                             legendHTML += `<div style="display:flex; align-items:center; gap:6px;"><span style="display:inline-block; width:14px; height:14px; background:${color}; border-radius:3px;"></span> ${p}</div>`;
                         });
@@ -695,19 +773,26 @@
 
                     let totalsHTML = '<div style="margin-top:18px; display:flex; justify-content:center; gap:18px; font-size:11px; color:#888;">';
                     years.forEach(y => {
-                        const t = monthKeys
-                            .filter(k => Math.floor(k / 100) === y)
-                            .reduce((acc, k) => acc + Object.values(byMonth[k]).reduce((a, b) => a + b, 0), 0);
+                        const t = bucketKeys
+                            .filter(k => bucket.yearOf(k) === y)
+                            .reduce((acc, k) => acc + Object.values(byBucket[k]).reduce((a, b) => a + b, 0), 0);
                         totalsHTML += `<div>${y}: <strong style="color:#444">${t}</strong> models</div>`;
                     });
                     totalsHTML += '</div>';
 
-                    const metricTabsHTML = `
-                        <div style="display:flex; justify-content:center; gap:8px; margin-bottom:16px;">
-                            <button onclick="setYearMetric('count')" style="padding:4px 12px; border-radius:16px; border:1px solid #ccc; background:${metric === 'count' ? '#e0e0e0' : '#fff'}; cursor:pointer; font-size:11px; font-weight:${metric === 'count' ? '600' : '400'};">Count</button>
-                            <button onclick="setYearMetric('percent')" style="padding:4px 12px; border-radius:16px; border:1px solid #ccc; background:${metric === 'percent' ? '#e0e0e0' : '#fff'}; cursor:pointer; font-size:11px; font-weight:${metric === 'percent' ? '600' : '400'};">Share %</button>
-                        </div>
-                    `;
+                    const bucketBtn = (b, label) => `<button onclick="setYearBucket('${b}')" style="padding:4px 12px; border-radius:16px; border:1px solid #ccc; background:${currentYearBucket === b ? '#e0e0e0' : '#fff'}; cursor:pointer; font-size:11px; font-weight:${currentYearBucket === b ? '600' : '400'};">${label}</button>`;
+                    const metricBtn = (m, label) => `<button onclick="setYearMetric('${m}')" style="padding:4px 12px; border-radius:16px; border:1px solid #ccc; background:${metric === m ? '#e0e0e0' : '#fff'}; cursor:pointer; font-size:11px; font-weight:${metric === m ? '600' : '400'};">${label}</button>`;
+                    const tabsRow = `<div style="display:flex; justify-content:center; align-items:center; gap:18px; margin-bottom:16px; flex-wrap:wrap;">`
+                        + `<div style="display:flex; gap:6px; align-items:center;">`
+                        + `<span style="font-size:10px; text-transform:uppercase; letter-spacing:0.4px; color:#888; margin-right:2px;">Bucket</span>`
+                        + `${bucketBtn('month', 'Month')}${bucketBtn('quarter', 'Quarter')}${bucketBtn('year', 'Year')}`
+                        + `</div>`
+                        + `<div style="display:flex; gap:6px; align-items:center;">`
+                        + `<span style="font-size:10px; text-transform:uppercase; letter-spacing:0.4px; color:#888; margin-right:2px;">Metric</span>`
+                        + `${metricBtn('count', 'Count')}${metricBtn('percent', 'Share %')}`
+                        + `</div>`
+                        + `</div>`;
+                    const metricTabsHTML = tabsRow;
 
                     chartHTML = `
                         <h3 style="margin-bottom:8px; color:#444; font-size: 16px;">Chip Provider Over Time</h3>
@@ -725,13 +810,15 @@
                     `;
                 }
             } else {
-                const total = RAW_DATA.length;
-                if (total === 0) return '<p class="empty">Select a model to view its classification path.</p>';
+                const total = filtered.length;
+                if (total === 0) {
+                    chartHTML = `<p class="empty" style="margin-top:0;">${sharedFilterParts.length ? 'No models match the current filters.' : 'Select a model to view its classification path.'}</p>`;
+                } else {
 
                 let modelcardCount = 0, githubCount = 0, arxivCount = 0;
                 const combos = {};
 
-                RAW_DATA.forEach(d => {
+                filtered.forEach(d => {
                     const m = hasViableEvidence(d.modelcard_analysis, 'modelcard', d.chip_provider);
                     const g = hasViableEvidence(d.github_code_analysis, 'github', d.chip_provider);
                     const a = hasViableEvidence(d.arxiv_paper_analysis, 'arxiv', d.chip_provider);
@@ -815,6 +902,7 @@
                         </table>
                     </div>
                 `;
+                }
             }
 
             const yearTabHTML = hasYearData()
@@ -830,9 +918,26 @@
                 </div>
             `;
 
+            // Year-Mode banner reflects only the chip filter, since the
+            // quarter filter doesn't apply to that chart (would shrink the
+            // x-axis to one bucket). All other modes use the shared banner.
+            let bannerHTML = filterBanner;
+            if (currentStatsMode === 'year') {
+                const yearParts = [];
+                if (CHIP_FILTER) yearParts.push(`chip=${CHIP_FILTER}`);
+                const yearCount = (CHIP_FILTER
+                    ? RAW_DATA.filter(d => ((d.conclusion && d.conclusion.chip_provider) || 'unknown') === CHIP_FILTER)
+                    : RAW_DATA).length;
+                bannerHTML = buildBanner(yearParts, yearCount);
+                if (QUARTER_FILTER) {
+                    bannerHTML += `<div style="font-size:10px; color:#999; font-style:italic; margin-top:-8px; margin-bottom:14px;">(Quarter filter <code>${QUARTER_FILTER}</code> ignored in Year Mode — pinning a single quarter would collapse the time axis.)</div>`;
+                }
+            }
+
             return `
             <div style="text-align:center; margin-top: 40px; width: 100%;">
                 ${tabsHTML}
+                ${bannerHTML}
                 ${chartHTML}
                 <p class="empty" style="margin-top:40px;">Select a model to view its classification path.</p>
             </div>

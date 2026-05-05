@@ -926,11 +926,21 @@ def build_results(llm_concurrency=32):
                           f"{final_chip} training disclosure — keeping heuristic answer")
 
     # ── Pass 2: Resolve derivative models via base_model ──────────────
+    # Maps runtime_library (from YAML library_name OR inferred from the model
+    # name in detect_derivative) → the chip vendor that the *runtime* implies.
+    # When the heuristic's pick coincides with the runtime vendor, it's almost
+    # certainly an artifact of conversion-target text and gets collapsed to
+    # unknown. None means "runtime is multi-vendor — don't auto-collapse."
     RUNTIME_CHIP_MAP = {
         "mlx": "apple",
         "coreml": "apple",
         "openvino": "intel",
         "onnx": None,
+        "gguf": None,    # llama.cpp; CPU/GPU/Metal — can't pin a vendor
+        "awq": None,     # CUDA-only in practice but the *base* may differ
+        "gptq": None,
+        "exl2": None,
+        "bnb": None,     # bitsandbytes; CUDA-only at inference, base varies
     }
     results_by_id = {r["id"]: r for r in results}
 
