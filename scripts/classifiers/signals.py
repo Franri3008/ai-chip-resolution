@@ -193,9 +193,17 @@ HARDWARE_SIGNALS = {
         "file_presence": [],
     },
     "baidu_kunlun": {
-        # Bare "XPU" collides with Intel oneAPI; require Baidu/Kunlun/Paddle context.
+        # Bare "Kunlun" collides with the Chinese given name (e.g. "Kunlun Zhu"
+        # in citations) and Beijing Kunlun Tech / Skywork's parent "Kunlun Inc."
+        # Bare "XPU" collides with Intel oneAPI. Both require chip-noun or
+        # training-verb context — same rule we already apply to NPU/MUSA/davinci.
         "strong": [
-            r'\bkunlun(?:xin)?\b',
+            r'\bkunlunxin\b',                     # brand, unambiguous
+            # "Kunlun" followed by a chip noun: "Kunlun P800 chips", "Kunlun XPU".
+            r'\bkunlun\b(?=\s+(?:P\d{3}|R[23]00|XPU|chip|core|card|cluster|'
+            r'GPU|accelerat|NPU))',
+            # Phrase-level disclosure: "Baidu Kunlun", "trained on Kunlun".
+            r'(?:\bbaidu\s+|trained?\s+on\s+|using\s+|with\s+)(?:\d+\s+)?kunlun\b',
             r'\b昆仑(?:芯|核)?\b',
             r'\bxpurt\b',
             r'paddle[-_]?xpu|xpu[-_]?paddle',
