@@ -61,3 +61,4 @@ Emil,nyrahealth/CrisperWhisper,874,random,Nvidia,unknown,cuda in gh repo
 Emil,Qwen/Qwen3-TTS-12Hz-0.6B-Base,853,random,unknown,unknown,
 Emil,NeuML/pubmedbert-base-embeddings,703,random,unknown,unknown,
 Emil,OpenMed/OpenMed-NER-PharmaDetect-SuperClinical-434M,929,random,Nvidia,A100,paper
+Francisco,deepseek-ai/DeepSeek-R1,,,Nvidia,H800,paper

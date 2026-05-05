@@ -19,9 +19,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import _keys  # noqa: F401  -- triggers .env auto-load before env reads below
 
 from openai import AsyncOpenAI
 
@@ -119,9 +123,10 @@ def validate_provider() -> None:
                 "Set OPENAI_API_KEY or write keys/.openai_token."
             )
     elif provider == "OPENROUTER":
-        if not _read_key(".openrouter_token"):
+        if not (os.environ.get("OPENROUTER_API_KEY") or _read_key(".openrouter_token")):
             raise LLMUnavailable(
-                "OPENROUTER provider selected but keys/.openrouter_token is missing."
+                "OPENROUTER provider selected but no key found. "
+                "Set OPENROUTER_API_KEY or write keys/.openrouter_token."
             )
     elif provider == "LOCAL":
         _check_local_reachable()
@@ -148,9 +153,9 @@ async def complete_async(messages: list[dict]) -> tuple[str, float]:
         model = DEFAULT_OPENAI_MODEL
 
     elif provider == "OPENROUTER":
-        key = _read_key(".openrouter_token")
+        key = os.environ.get("OPENROUTER_API_KEY") or _read_key(".openrouter_token")
         if not key:
-            raise LLMUnavailable("OPENROUTER provider selected but keys/.openrouter_token is missing.")
+            raise LLMUnavailable("OPENROUTER provider selected but no key found.")
         client = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=key)
         model = DEFAULT_OPENROUTER_MODEL
 

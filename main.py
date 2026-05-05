@@ -15,8 +15,10 @@ INGEST = SCRIPTS / "ingest"
 LLM = SCRIPTS / "llm"
 CLASSIFIERS = SCRIPTS / "classifiers"
 
+sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(CLASSIFIERS))
 sys.path.insert(0, str(LLM))
+import _keys  # noqa: E402,F401  -- triggers .env auto-load before any env reads
 from signals import (  # noqa: E402
     apply_training_disclosure_cap,
     has_explicit_training_chip_evidence,
@@ -33,9 +35,23 @@ from llm_client import (  # noqa: E402
 )
 
 LLM_CHIP_CONFIDENCE_THRESHOLD = 0.5
+COMBINE_AGREEMENT_THRESHOLD = 0.4
 
-# Broad upstream repos often expose framework/runtime support, but not the
-# training hardware for a specific checkpoint.
+
+def _combine_independent(confidences):
+    """Combine independent agreeing sources via 1 − ∏ (1 − cᵢ).
+
+    Treats each cᵢ as P(correct | sourceᵢ) and the sources as independent
+    evidence. Two 0.6 sources → 0.84; a 0.9 source plus a 0.5 source → 0.95.
+    The combine never decreases confidence and is always ≤ 1.
+    """
+    p_wrong = 1.0
+    for c in confidences:
+        if c is None or c <= 0:
+            continue
+        p_wrong *= max(0.0, 1.0 - c)
+    return 1.0 - p_wrong
+
 LOW_TRUST_GITHUB_CHIP_REPOS = {
     "facebookresearch/convnext-v2",
     "flagopen/flagembedding",
@@ -59,7 +75,6 @@ _RUNTIME_CHIP_NOISE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Ground truth provider names → pipeline chip_provider names
 _GT_PROVIDER_MAP = {
     "nvidia": "nvidia",
     "google": "google_tpu",
@@ -379,18 +394,34 @@ def resolve_initial_conclusion(mc, mca, gha, axa):
 
     chip_conflict = False
     if chip != "unknown":
-        for other_chip, other_conf in (
-            (mc_chip, mc_chip_conf),
-            (gh_chip, gh_chip_conf),
-            (ax_chip, ax_chip_conf),
-        ):
-            if (
-                other_chip != "unknown"
-                and other_chip != chip
-                and other_conf >= CONFLICT_DISAGREE_MIN
-            ):
-                chip_conflict = True
-                break
+        winning_source = {
+            "modelcard": "mc",
+            "github_code": "gh",
+            "arxiv_paper": "ax",
+        }.get(chip_src)
+        all_sources = [
+            ("mc", mc_chip, mc_chip_conf),
+            ("gh", gh_chip, gh_chip_conf),
+            ("ax", ax_chip, ax_chip_conf),
+        ]
+        agreeing_confs = [chip_conf]
+        for tag, other_chip, other_conf in all_sources:
+            if tag == winning_source:
+                continue
+            if other_chip == "unknown" or other_conf <= 0:
+                continue
+            if other_chip != chip:
+                if other_conf >= CONFLICT_DISAGREE_MIN:
+                    chip_conflict = True
+            elif other_conf >= COMBINE_AGREEMENT_THRESHOLD:
+                # Independent agreeing source above the runtime-noise threshold
+                # — count it as corroboration. Weak agreements (≤0.4) are often
+                # correlated runtime hints, so we don't combine them.
+                agreeing_confs.append(other_conf)
+
+        if len(agreeing_confs) > 1:
+            chip_conf = round(_combine_independent(agreeing_confs), 2)
+
         if chip_conflict:
             chip_conf = min(chip_conf, CONFLICT_CONF_CAP)
 
@@ -812,12 +843,23 @@ def build_results(llm_concurrency=32):
                               f"mention) in modelcard / disclosed snippets "
                               f"(was {final_chip}@{final_src})")
                 if allow_override:
-                    r["conclusion"]["chip_provider"] = llm_chip
-                    r["conclusion"]["chip_provider_confidence"] = llm_conf
-                    r["conclusion"]["chip_provider_source"] = "llm_chip"
-                    llm_chip_calls += 1
-                    final_chip, final_conf, final_src = llm_chip, llm_conf, "llm_chip"
-                    print(f"  LLM chip override for {model_id}: {llm_chip} (conf={llm_conf}, Cost: ${cost:.6f})")
+                    if llm_chip == final_chip and final_chip != "unknown":
+                        # Agreement: combine independent evidence rather than
+                        # replacing the heuristic. The LLM has its own 0.8 ceiling
+                        # which would otherwise *lower* a strong heuristic signal.
+                        combined_conf = round(_combine_independent([final_conf, llm_conf]), 2)
+                        r["conclusion"]["chip_provider_confidence"] = combined_conf
+                        llm_chip_calls += 1
+                        final_conf = combined_conf
+                        print(f"  LLM chip agreement for {model_id}: {llm_chip} "
+                              f"({final_src}+llm → conf={combined_conf}, Cost: ${cost:.6f})")
+                    else:
+                        r["conclusion"]["chip_provider"] = llm_chip
+                        r["conclusion"]["chip_provider_confidence"] = llm_conf
+                        r["conclusion"]["chip_provider_source"] = "llm_chip"
+                        llm_chip_calls += 1
+                        final_chip, final_conf, final_src = llm_chip, llm_conf, "llm_chip"
+                        print(f"  LLM chip override for {model_id}: {llm_chip} (conf={llm_conf}, Cost: ${cost:.6f})")
             else:
                 # LLM said unknown — override only weak heuristic hits. High-conf
                 # github/arXiv evidence stays (the LLM only read the modelcard).
