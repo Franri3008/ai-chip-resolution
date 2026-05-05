@@ -66,7 +66,15 @@ _RUNTIME_CHIP_NOISE_RE = re.compile(
     r'(?:'
     r'inference|inference\s+computations|throughput|latency|benchmark|self-hosted|speed|runtime|'
     r'deploy|deployment|serving|device_map|supported|compatible|works?\s+with|install|cpuonly|'
-    r'cuda\s+gpu\s+machine|TensorRT|OpenVINO|MLX|vLLM|SGLang|Ollama|LM\s?Studio|'
+    r'cuda\s+gpu\s+machine|'
+    # Deployment / inference frameworks. README boilerplate around these is
+    # the dominant source of false-positive chip "training" mentions in
+    # popular-model repos (DeepSeek, Qwen, Llama derivatives etc.).
+    r'TensorRT(?:[- ]LLM)?|OpenVINO|MLX|vLLM|vllm[-_]ascend|vllm[-_]musa|SGLang|Ollama|LM\s?Studio|'
+    r'LMDeploy|MindIE|MLC[- ]?LLM|KTransformers|llama\.cpp|llama-?cpp|llamafile|'
+    r'ExecuTorch|CTranslate2|text-generation-inference|\bTGI\b|HF\s+Inference\s+Endpoints?|'
+    r'ONNX\s*Runtime|onnxruntime|GGUF|GGML|GPTQ(?:Model)?|AWQ|BitsAndBytes|bnb[-_]?4bit|'
+    r'Triton\s+Inference\s+Server|XInference|Tabby|'
     r'pipeline\.to\(|GPU\s+memory|requirements\s+on\s+GPU\s+memory|device\s+cache|empty_cache|'
     r'evaluation\b|per\s+query|re-rank|validation\s+set|top-1000|langchain|'
     r'HuggingFaceBgeEmbeddings|engine="torch"|onnx\s+inference|processing\s+on\s+gpu|'
@@ -307,6 +315,23 @@ def _is_runtime_only_chip_evidence(snippets):
     return all(_RUNTIME_CHIP_NOISE_RE.search(snippet.get("snippet", "")) for snippet in snippets)
 
 
+def _winner_has_training_disclosure(chip, snippet_groups):
+    """True if any group has a training-disclosure snippet for `chip`.
+
+    Snippets carry a `provider` field set by the per-source classifiers. We
+    require it to match the winning chip so a paper that discloses training
+    on chip A doesn't waive a conflict-with-chip-B cap. Snippets without a
+    provider tag are ignored (they can't be attributed safely).
+    """
+    for group in snippet_groups:
+        for s in (group or []):
+            if s.get("provider") != chip:
+                continue
+            if snippet_is_training_disclosure(s):
+                return True
+    return False
+
+
 def resolve_initial_conclusion(mc, mca, gha, axa):
     """Resolve chip provider before optional LLM fallback."""
     mc_chip = mca.get("chip_provider", "unknown")
@@ -422,7 +447,17 @@ def resolve_initial_conclusion(mc, mca, gha, axa):
         if len(agreeing_confs) > 1:
             chip_conf = round(_combine_independent(agreeing_confs), 2)
 
-        if chip_conflict:
+        # Canonical-evidence override: training disclosure for the winning chip
+        # in *any* source (paper, modelcard, github training script) is stronger
+        # than runtime-only mentions of a different chip from another source.
+        # README "supports H100" lines shouldn't dilute a paper that explicitly
+        # says "we trained on TPU v4-128".
+        winner_has_disclosure = _winner_has_training_disclosure(
+            chip,
+            (mca.get("chip_snippets"), gha.get("chip_snippets"), axa.get("chip_snippets")),
+        )
+
+        if chip_conflict and not winner_has_disclosure:
             chip_conf = min(chip_conf, CONFLICT_CONF_CAP)
 
     return {

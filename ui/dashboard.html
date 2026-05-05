@@ -20,6 +20,70 @@
             margin-left: 10px;
             vertical-align: middle;
         }
+
+        .combobox {
+            position: relative;
+            display: inline-block;
+            vertical-align: middle;
+        }
+
+        .combobox input {
+            min-width: 380px;
+            padding: 4px 28px 4px 8px;
+            font: inherit;
+            box-sizing: border-box;
+        }
+
+        .combobox-caret {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            pointer-events: none;
+            color: #888;
+            font-size: 10px;
+        }
+
+        .combobox-panel {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            max-height: 320px;
+            overflow-y: auto;
+            background: #fff;
+            border: 1px solid #ccc;
+            border-top: none;
+            z-index: 1000;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            text-align: left;
+        }
+
+        .combobox-option {
+            padding: 6px 10px;
+            cursor: pointer;
+            font-size: 13px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .combobox-option.active,
+        .combobox-option:hover {
+            background: #e3f2fd;
+        }
+
+        .combobox-option.clear {
+            color: #555;
+            font-style: italic;
+            border-bottom: 1px solid #eee;
+        }
+
+        .combobox-option.empty {
+            color: #999;
+            cursor: default;
+            font-style: italic;
+        }
     </style>
 </head>
 
@@ -30,18 +94,24 @@
             <option value="desc" selected>Default Order</option>
             <option value="asc">Alphabetical</option>
         </select>
-        <select id="quarter-filter" style="vertical-align: middle; margin-right: 6px; min-width: auto;" title="Filter by creation quarter">
+        <select id="quarter-filter" style="vertical-align: middle; margin-right: 6px; min-width: auto;"
+            title="Filter by creation quarter">
             <option value="">All quarters</option>
         </select>
-        <select id="chip-filter" style="vertical-align: middle; margin-right: 10px; min-width: auto;" title="Filter by predicted chip provider">
+        <select id="chip-filter" style="vertical-align: middle; margin-right: 10px; min-width: auto;"
+            title="Filter by predicted chip provider">
             <option value="">All chips</option>
         </select>
-        <select id="model-select">
-            <option value="">-- Select a model --</option>
-        </select>
+        <div class="combobox" id="model-combo">
+            <input type="text" id="model-search" autocomplete="off" spellcheck="false"
+                placeholder="-- Select a model --" role="combobox" aria-expanded="false" aria-controls="model-list"
+                aria-autocomplete="list">
+            <span class="combobox-caret">▾</span>
+            <div class="combobox-panel" id="model-list" role="listbox" hidden></div>
+        </div>
         <a id="hf-button" class="hf-btn" target="_blank">🤗</a>
     </div>
-    <div id="data-source-info" style="font-size:11px; color:#888; padding:4px 12px;">Loading…</div>
+    <div id="data-source-info" style="font-size:11px; color:#888; padding:4px 12px; text-align:center;">Loading…</div>
 
     <div class="diagram" id="diagram">
         <p class="empty">Select a model</p>
@@ -65,7 +135,7 @@
 
         function setYearMetric(metric) {
             currentYearMetric = metric;
-            if (document.getElementById('model-select').value === '') {
+            if (SELECTED_INDEX == null) {
                 document.getElementById('diagram').innerHTML = drawGlobalStats();
             }
         }
@@ -82,6 +152,7 @@
         // Quarter / chip filter state. Empty string = no filter.
         let QUARTER_FILTER = '';
         let CHIP_FILTER = '';
+        let NAME_FILTER = '';
 
         function quarterOf(m) {
             if (m.year == null || m.month == null) return null;
@@ -97,6 +168,7 @@
                 const chip = (m.conclusion && m.conclusion.chip_provider) || 'unknown';
                 if (chip !== CHIP_FILTER) return false;
             }
+            if (NAME_FILTER && !m.id.toLowerCase().includes(NAME_FILTER)) return false;
             return true;
         }
 
@@ -138,41 +210,116 @@
             });
         }
 
+        let SELECTED_INDEX = null;
+        let ACTIVE_INDEX = -1;
+        let FILTERED_VIEW = [];
+
         function renderModelSelect() {
-            const sel = document.getElementById('model-select');
-            const prev = sel.value;
-            sel.innerHTML = '<option value="">-- Select a model --</option>';
+            const panel = document.getElementById('model-list');
             const filtered = DATA.filter(modelMatchesFilters);
-            filtered.forEach(m => {
-                const opt = document.createElement('option');
-                opt.value = m.original_index;
-                opt.textContent = m.id;
-                sel.appendChild(opt);
-            });
+            FILTERED_VIEW = filtered;
+            ACTIVE_INDEX = filtered.length > 0 ? 0 : -1;
+
+            // Update placeholder so the count is always visible even when collapsed.
+            const input = document.getElementById('model-search');
+            input.placeholder = `-- Select between ${filtered.length} models --`;
+
+            panel.innerHTML = '';
+
+            const clearOpt = document.createElement('div');
+            clearOpt.className = 'combobox-option clear';
+            clearOpt.textContent = `Show overview (${filtered.length} models)`;
+            clearOpt.dataset.idx = '-1';
+            panel.appendChild(clearOpt);
+
+            if (filtered.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'combobox-option empty';
+                empty.textContent = 'No models match the current filters';
+                panel.appendChild(empty);
+            } else {
+                filtered.forEach((m, i) => {
+                    const opt = document.createElement('div');
+                    opt.className = 'combobox-option';
+                    opt.textContent = m.id;
+                    opt.dataset.idx = String(i);
+                    opt.setAttribute('role', 'option');
+                    if (i === ACTIVE_INDEX) opt.classList.add('active');
+                    panel.appendChild(opt);
+                });
+            }
+
             // Surface filter result count alongside the source line.
             const srcInfo = document.getElementById('data-source-info');
             if (srcInfo && DATA_SOURCE_USED) {
                 const filterParts = [];
                 if (QUARTER_FILTER) filterParts.push(`quarter=${QUARTER_FILTER}`);
                 if (CHIP_FILTER) filterParts.push(`chip=${CHIP_FILTER}`);
+                if (NAME_FILTER) filterParts.push(`name~"${NAME_FILTER}"`);
                 const tail = filterParts.length
                     ? ` — filtered to ${filtered.length}/${RAW_DATA.length} (${filterParts.join(', ')})`
                     : ` — ${RAW_DATA.length} models`;
                 srcInfo.textContent = `Source: ${DATA_SOURCE_USED}${tail}`;
             }
-            // Try to keep selection if still in filtered set.
-            if (prev && Array.from(sel.options).some(o => o.value === prev)) {
-                sel.value = prev;
+        }
+
+        function setActive(i) {
+            ACTIVE_INDEX = i;
+            const opts = document.querySelectorAll('#model-list .combobox-option:not(.clear):not(.empty)');
+            opts.forEach((o, k) => o.classList.toggle('active', k === i));
+            const target = opts[i];
+            if (target) target.scrollIntoView({ block: 'nearest' });
+        }
+
+        function moveActive(delta) {
+            if (FILTERED_VIEW.length === 0) return;
+            const next = (ACTIVE_INDEX + delta + FILTERED_VIEW.length) % FILTERED_VIEW.length;
+            setActive(next);
+        }
+
+        function openPanel() {
+            const panel = document.getElementById('model-list');
+            const input = document.getElementById('model-search');
+            // Clear the visible selection text so the user can type immediately.
+            input.value = '';
+            NAME_FILTER = '';
+            renderModelSelect();
+            panel.hidden = false;
+            input.setAttribute('aria-expanded', 'true');
+        }
+
+        function closePanel(restoreSelection = true) {
+            const panel = document.getElementById('model-list');
+            const input = document.getElementById('model-search');
+            panel.hidden = true;
+            input.setAttribute('aria-expanded', 'false');
+            if (restoreSelection) {
+                input.value = SELECTED_INDEX != null ? RAW_DATA[SELECTED_INDEX].id : '';
+                NAME_FILTER = '';
+            }
+        }
+
+        function selectModel(rawIdx) {
+            SELECTED_INDEX = rawIdx;
+            const input = document.getElementById('model-search');
+            const hfBtn = document.getElementById('hf-button');
+            input.value = rawIdx != null ? RAW_DATA[rawIdx].id : '';
+            NAME_FILTER = '';
+            closePanel(false);
+            if (rawIdx == null) {
+                document.getElementById('diagram').innerHTML = drawGlobalStats();
+                hfBtn.style.display = 'none';
+            } else {
+                const model = RAW_DATA[rawIdx];
+                hfBtn.href = 'https://huggingface.co/' + model.id;
+                hfBtn.style.display = 'inline-block';
+                render(model);
             }
         }
 
         document.getElementById('sort-select').addEventListener('change', function () {
-            const currentSelected = document.getElementById('model-select').value;
             applySort();
             renderModelSelect();
-            if (currentSelected !== '') {
-                document.getElementById('model-select').value = currentSelected;
-            }
         });
 
         document.getElementById('quarter-filter').addEventListener('change', function () {
@@ -185,9 +332,53 @@
             renderModelSelect();
         });
 
+        (function bindCombobox() {
+            const input = document.getElementById('model-search');
+            const panel = document.getElementById('model-list');
+            const combo = document.getElementById('model-combo');
+
+            input.addEventListener('focus', openPanel);
+            input.addEventListener('click', () => { if (panel.hidden) openPanel(); });
+
+            input.addEventListener('input', function () {
+                NAME_FILTER = this.value.trim().toLowerCase();
+                if (panel.hidden) panel.hidden = false;
+                input.setAttribute('aria-expanded', 'true');
+                renderModelSelect();
+            });
+
+            input.addEventListener('keydown', function (e) {
+                if (e.key === 'ArrowDown') { e.preventDefault(); if (panel.hidden) openPanel(); else moveActive(1); }
+                else if (e.key === 'ArrowUp') { e.preventDefault(); moveActive(-1); }
+                else if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (FILTERED_VIEW.length > 0 && ACTIVE_INDEX >= 0) {
+                        selectModel(FILTERED_VIEW[ACTIVE_INDEX].original_index);
+                    }
+                } else if (e.key === 'Escape') {
+                    closePanel(true);
+                    input.blur();
+                }
+            });
+
+            // mousedown (not click) so we beat the input-blur race.
+            panel.addEventListener('mousedown', function (e) {
+                const opt = e.target.closest('.combobox-option');
+                if (!opt || opt.classList.contains('empty')) return;
+                e.preventDefault();
+                const idx = parseInt(opt.dataset.idx);
+                if (idx === -1) selectModel(null);
+                else selectModel(FILTERED_VIEW[idx].original_index);
+            });
+
+            document.addEventListener('mousedown', function (e) {
+                if (!panel.hidden && !combo.contains(e.target)) closePanel(true);
+            });
+        })();
+
         function setStatsMode(mode) {
             currentStatsMode = mode;
-            if (document.getElementById('model-select').value === '') {
+            if (SELECTED_INDEX == null) {
                 document.getElementById('diagram').innerHTML = drawGlobalStats();
             }
         }
@@ -648,21 +839,16 @@
             `;
         }
 
-        // Data sources, in order of preference:
-        //   1. ?src=<url>          — explicit override via query string
-        //   2. ../database/results.json   — the local pipeline output, when the
-        //      dashboard is served from the repo root (`python -m http.server`)
-        //   3. https://huggingface.co/datasets/Franri/model-chips-data/...  — the
-        //      published dataset, used when opening the file directly with no
-        //      server running
         const DATA_SOURCES = (() => {
             const params = new URLSearchParams(window.location.search);
             const explicit = params.get('src');
+            const fileParam = params.get('file');
+            const fileName = fileParam === '1' ? 'results_top10k.json' : 'results_top50.json';
             const candidates = [];
             if (explicit) candidates.push(explicit);
             candidates.push('../database/results.json');
             candidates.push('database/results.json');
-            candidates.push('https://huggingface.co/datasets/Franri/model-chips-data/resolve/main/results.json');
+            candidates.push('https://huggingface.co/datasets/Franri/model-chips-data/resolve/main/' + fileName);
             return candidates;
         })();
 
@@ -695,7 +881,7 @@
         }
 
         // Drag-and-drop: drop a results.json onto the page to load it.
-        ['dragover','drop'].forEach(ev => document.addEventListener(ev, e => e.preventDefault()));
+        ['dragover', 'drop'].forEach(ev => document.addEventListener(ev, e => e.preventDefault()));
         document.addEventListener('drop', e => {
             const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
             if (!f) return;
@@ -712,18 +898,6 @@
         let DATA_SOURCE_USED = '';
         loadFromSources(DATA_SOURCES);
 
-        document.getElementById('model-select').addEventListener('change', function () {
-            const hfBtn = document.getElementById('hf-button');
-            if (this.value === '') {
-                document.getElementById('diagram').innerHTML = drawGlobalStats();
-                hfBtn.style.display = 'none';
-                return;
-            }
-            const model = RAW_DATA[parseInt(this.value)];
-            hfBtn.href = 'https://huggingface.co/' + model.id;
-            hfBtn.style.display = 'inline-block';
-            render(model);
-        });
 
         function render(m) {
             const mc = m.modelcard_analysis || {};
@@ -759,7 +933,6 @@
             }
             h += '</div>';
 
-            // ── Connector: Model Card → GitHub Resolution ──
             const numGhCandidates = (gr.candidate_links || []).length;
             if (numGhCandidates > 0) {
                 h += connector([{ text: `${numGhCandidates} GitHub link${numGhCandidates > 1 ? 's' : ''} found in model card`, cls: '' }]);
@@ -800,7 +973,6 @@
             }
             h += '</div>';
 
-            // ── Connector: GitHub Resolution → GitHub Code Analysis ──
             if (hasGithub) {
                 const connLabels = [];
                 if (gr.source === 'llm') {
@@ -838,7 +1010,6 @@
             }
             h += '</div>';
 
-            // ── Connector: GitHub Code → ArXiv Paper ──
             const numAxCandidates = (ar.candidate_links || []).length;
             if (numAxCandidates > 0) {
                 h += connector([{ text: `${numAxCandidates} arXiv paper${numAxCandidates > 1 ? 's' : ''} found in model card`, cls: '' }]);
@@ -853,7 +1024,6 @@
             if (numAxCandidates === 0) {
                 h += '<div style="color:#aaa;font-style:italic">Skipped — no arXiv papers found</div>';
             } else {
-                // Show selected paper
                 if (hasArxiv) {
                     const paperLink = ar.selected_link;
                     const paperId = paperLink.replace('https://arxiv.org/abs/', '');
