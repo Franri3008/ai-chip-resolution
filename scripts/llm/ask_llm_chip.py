@@ -26,6 +26,10 @@ CONFIDENCE_MAP = {
 _CHIP_OR_TRAINING_RE = re.compile(
     r'\b(?:A100|H100|H800|A800|V100|H200|P100|T4|L40[Ss]?|A6000|A10[Gg]?|DGX|'
     r'MI\d{3}[Xx]?|Instinct|Gaudi|Habana|Xeon|'
+    # AWS EC2 SKUs — quote-validation should treat "p3.2xlarge" / "trn1.32xlarge"
+    # as legitimate chip references (they identify NVIDIA / Trainium respectively).
+    r'[pg][2-6][a-z]{0,3}\.(?:\d*xlarge|metal)|'
+    r'(?:trn|inf)[12]?n?\.(?:\d*xlarge|metal)|'
     r'TPU(?:\s*v\d+)?|Trainium|Inferentia|Neuron|'
     r'M[1-4](?:\s*(?:Pro|Max|Ultra))?|MLX|CoreML|OpenVINO|'
     # Chinese accelerators

@@ -33,6 +33,13 @@ HARDWARE_SIGNALS = {
             r'\bDGX\b',
             r'\bdeepspeed\b',
             r'torch\+cu\d+',
+            # AWS EC2 GPU instance types — each family deterministically maps
+            # to an NVIDIA chip: p2→K80, p3→V100, p4d/p4de→A100, p5/p5e/p5en
+            # →H100/H200, g3→M60, g4dn→T4, g5→A10G, g5g→T4G, g6→L4, g6e→L40S.
+            # These SKU strings are unambiguous: "p3.2xlarge" is never said
+            # outside an EC2 context. (g4ad is AMD — handled in amd.medium.)
+            r'\bp[2-5][a-z]{0,3}\.(?:\d*xlarge|metal)\b',
+            r'\bg(?:3|4dn|5g?|6e?)\.(?:\d*xlarge|metal)\b',
         ],
         "weak": [],
         "file_presence": [
@@ -57,6 +64,9 @@ HARDWARE_SIGNALS = {
             r'\bMI210\b',
             r'\binstinct\b',
             r'amd[-_]?gpu',
+            # AWS EC2 g4ad family is the one AMD-backed GPU instance line
+            # (Radeon Pro V520). Distinct family code; pin it here.
+            r'\bg4ad\.(?:\d*xlarge|metal)\b',
         ],
         "weak": [],
         "file_presence": [
@@ -127,19 +137,27 @@ HARDWARE_SIGNALS = {
             r'\bneuronx[-_]cc\b',
         ],
         "medium": [
-            r'\btrn1\b',
-            r'\binf2\b',
+            # EC2 AI-chip instance families: trn1/trn1n (Trainium),
+            # inf1/inf2 (Inferentia / Inferentia2). Bare trn1/inf2 retained
+            # for prose mentions; the SKU forms catch instance-typed disclosure.
+            r'\btrn1n?\b',
+            r'\binf[12]\b',
+            r'\b(?:trn|inf)[12]?n?\.(?:\d*xlarge|metal)\b',
         ],
         "weak": [],
         "file_presence": [],
     },
     "qualcomm": {
+        # Bare "Hexagon" collides with the geometric shape — popular demo
+        # prompts ("ball bouncing inside a spinning hexagon") trip it. Require
+        # DSP / Qualcomm context, same rule as DCU/NPU/MUSA elsewhere.
         "strong": [
             r'\bqnn\b',
             r'\bsnpe\b',
             r'qualcomm[-_]?ai',
             r'\bsnapdragon\b',
-            r'\bhexagon\b',
+            r'\bhexagon\s+(?:DSP|NN|SDK|processor|architecture|tensor)\b',
+            r'(?:Qualcomm|qcom)\s+Hexagon\b',
         ],
         "medium": [],
         "weak": [],
@@ -262,15 +280,18 @@ HARDWARE_SIGNALS = {
         "file_presence": [],
     },
     "hygon": {
-        # Bare `DCU` is generic; require Hygon/DTK/hy-smi context.
+        # Bare `DCU` and bare `DTK` are both generic — DTK collides with the
+        # ℒ_DTK loss notation in some recent papers (LFM2 distillation), and
+        # DCU is just a common acronym. Require Hygon/海光 context for both.
         "strong": [
             r'\bhygon\b',
             r'\b海光\b',                          # Chinese for Hygon
             r'\bhy[-_]?smi\b',
             r'\bhygon[-_]?dcu\b',
-            r'\bdtk\b(?!.*toolkit\s*for\s*(?:vmware|swift))',  # Hygon DTK; weak filter
-            r'hygon[-_]?dtk',
-            r'(?:Hygon|海光)\s+DCU',
+            r'\bhygon[-_]?dtk\b',
+            r'(?:Hygon|海光)\s+(?:DCU|DTK)\b',
+            # Bare DTK only counts when followed by a toolkit/runtime/driver noun.
+            r'\bdtk\b(?=\s+(?:toolkit|driver|sdk|runtime|compiler|GPU|DCU))',
             r'DCU_VISIBLE_DEVICES',
         ],
         "medium": [
@@ -330,7 +351,10 @@ CONFIDENCE_DIVISOR = 30
 TRAINING_DISCLOSURE_CAP = 0.6
 
 EXPLICIT_TRAINING_DISCLOSURE_RE = re.compile(
-    r'(?:trained?\s+on|training\s+(?:was\s+)?(?:done|performed|conducted|run|utilized)\s+on|'
+    # Allow auxiliaries beyond "was": "training is done on", "has been done
+    # on", "will be performed on" — common in modelcards ("Training is done
+    # on a p3.2xlarge AWS EC2") that the original `(?:was\s+)?` form missed.
+    r'(?:trained?\s+on|training\s+(?:(?:is|was|has\s+been|had\s+been|will\s+be|gets|got)\s+)?(?:done|performed|conducted|run|utilized|completed|carried\s+out)\s+on|'
     r'training\s+(?:hardware|infrastructure|utilized)|'
     r'fine[- ]?tun(?:ed|ing)\s+on|pre[- ]?train(?:ed|ing)\s+on|'
     r'we\s+train(?:ed)?\b|experiments?\b.{0,60}?\bconducted\s+on|'
@@ -348,6 +372,9 @@ EXPLICIT_TRAINING_DISCLOSURE_RE = re.compile(
 
 HARDWARE_LITERAL_RE = re.compile(
     r'(?:\bTPU(?:\s*v\d+)?\b|\bA100\b|\bH100\b|\bV100\b|\bH200\b|\bP100\b|\bT4\b|'
+    # AWS EC2 GPU / AI-chip SKUs — chip-vendor identifiable from instance family.
+    r'\b[pg][2-6][a-z]{0,3}\.(?:\d*xlarge|metal)\b|'
+    r'\b(?:trn|inf)[12]?n?\.(?:\d*xlarge|metal)\b|'
     r'\bMI\d{3}[Xx]?\b|\bGaudi\b|\bTrainium\b|\bInferentia\b|\bGPU(?:s)?\b|NVIDIA|'
     r'\bAscend(?:\s*\d{3}[A-Da-d]?)?\b|\b910[ABCDabcd]\b|\bAtlas\s*\d{3}\b|\bNPU(?:s)?\b|'
     r'\bMLU\s*\d{3}\b|\bMindSpore\b|\bCambricon\b|\b昇腾\b|'
